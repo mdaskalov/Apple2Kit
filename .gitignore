@@ -1,0 +1,10 @@
+.DS_Store
+xcuserdata/
+__pycache__/
+*.pyc
+.build/
+.swiftpm/
+Package.resolved
+# the ROMs: not part of the package (README.md)
+/roms/
+*.rom
