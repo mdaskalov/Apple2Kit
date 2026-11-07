@@ -33,24 +33,36 @@ public nonisolated enum Screen {
         public var id: String { rawValue }
     }
 
+    /// A colour of the screen.
+    public struct RGB: Equatable, Sendable {
+        public let r, g, b: UInt8
+        public init(r: UInt8, g: UInt8, b: UInt8) { (self.r, self.g, self.b) = (r, g, b) }
+    }
+
+    public static let whiteRGB = RGB(r: 255, g: 255, b: 255)
+    /// The monochrome screen's green.
+    public static let monoRGB = RGB(r: 20, g: 245, b: 60)
+    /// Hi-res: [palette bit × 2 + column parity]: violet, green, blue, orange.
+    public static let hiresRGB = [RGB(r: 255, g: 68, b: 253), RGB(r: 20, g: 245, b: 60),
+                                  RGB(r: 20, g: 207, b: 253), RGB(r: 255, g: 106, b: 60)]
+    /// `Style.color`: a gap in a colour (an unlit pixel between two lit ones)
+    /// in the colour this much as bright – not quite black (it looks better than
+    /// black).
+    public static let gapShade = 0.4
+
     /// RGBA as it lies in memory, R first, opaque.
     static func rgba(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> UInt32 {
         UInt32(r) | UInt32(g) << 8 | UInt32(b) << 16 | 0xFF00_0000
     }
 
+    static func rgba(_ c: RGB) -> UInt32 { rgba(c.r, c.g, c.b) }
+
     static let black = rgba(0, 0, 0)
-    static let white = rgba(255, 255, 255)
-    /// The monochrome screen's green.
-    static let green = rgba(20, 245, 60)
-    /// Hi-res: [palette bit × 2 + column parity]: violet, green, blue, orange.
-    static let hiresRGB: [(UInt8, UInt8, UInt8)] = [(255, 68, 253), (20, 245, 60), (20, 207, 253), (255, 106, 60)]
-    static let hiresColours = hiresRGB.map { rgba($0.0, $0.1, $0.2) }
-    /// `Style.color`: a gap in a colour (an unlit pixel between two lit ones)
-    /// in the colour this much as bright – not quite black (it looks better than
-    /// black).
-    static let gapShade = 0.4
+    static let white = rgba(whiteRGB)
+    static let green = rgba(monoRGB)
+    static let hiresColours = hiresRGB.map(rgba)
     static let gapColours = hiresRGB.map {
-        rgba(UInt8(Double($0.0) * gapShade), UInt8(Double($0.1) * gapShade), UInt8(Double($0.2) * gapShade))
+        rgba(UInt8(Double($0.r) * gapShade), UInt8(Double($0.g) * gapShade), UInt8(Double($0.b) * gapShade))
     }
     /// Lo-res colours 0-15.
     static let loresColours: [UInt32] = [
@@ -139,41 +151,62 @@ public nonisolated enum Screen {
 
     // MARK: hi-res
 
-    /// Hi-res lines in their dots.  A lit pixel's dots in its colour – white
-    /// next to another lit pixel, else its palette colour; green on the
-    /// monochrome screen –, a colour's gaps in a dark shade of it
-    /// (`Style.color`), every other dot black; a byte with the palette bit
-    /// set half a pixel to the right (`dots`).  `Style.filled`: gaps filled,
-    /// nothing shifted.
+    /// `screen` as the Apple shows it, in its dots: 560 × 384, a dot a
+    /// column, a line two rows (`drawHires`).
+    public static func image(_ screen: HiresScreen, style: Style = .color) -> CGImage? {
+        let w = width
+        var pixels = [UInt32](repeating: black, count: w * height * 2)
+        pixels.withUnsafeMutableBufferPointer { buffer in
+            screen.bytes.withUnsafeBufferPointer { bytes in
+                withHiresLine { line in
+                    for y in 0 ..< height {
+                        let o = buffer.baseAddress! + y * 2 * w
+                        line.draw(bytes.baseAddress! + y * HiresScreen.bytesPerLine, style: style, into: o)
+                        (o + w).update(from: o, count: w)
+                    }
+                }
+            }
+        }
+        return image(pixels, width: w, height: height * 2)
+    }
+
+    /// `screen` small, a pixel a pixel (280 × 192), for thumbnails: its
+    /// colours as a colour monitor shows them from afar, filled in (as
+    /// `Style.filled`; green on the monochrome screen).  Half a pixel is too
+    /// small to show here: no byte shifted.
+    public static func thumbnail(_ screen: HiresScreen, style: Style = .color) -> CGImage? {
+        let w = HiresScreen.width
+        var pixels = [UInt32](repeating: black, count: w * height)
+        pixels.withUnsafeMutableBufferPointer { buffer in
+            screen.bytes.withUnsafeBufferPointer { bytes in
+                withHiresLine { line in
+                    for y in 0 ..< height {
+                        line.thumbnail(bytes.baseAddress! + y * HiresScreen.bytesPerLine, style: style,
+                                       into: buffer.baseAddress! + y * w)
+                    }
+                }
+            }
+        }
+        return image(pixels, width: w, height: height)
+    }
+
+    /// Hi-res lines of memory in their dots (`HiresLine.draw`).
     private static func drawHires(_ m: UnsafePointer<UInt8>, lines: Range<Int>, page2: Bool,
                                   style: Style, _ out: UnsafeMutablePointer<UInt32>) {
-        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 282) { line in
-            withUnsafeTemporaryAllocation(of: UInt32.self, capacity: 280) { colours in
+        withHiresLine { line in
+            for y in lines { line.draw(m + hiresAddress(line: y, page2: page2), style: style, into: out + y * width) }
+        }
+    }
+
+    /// Runs `body` with room to draw hi-res lines in.
+    private static func withHiresLine<R>(_ body: (HiresLine) -> R) -> R {
+        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: HiresScreen.width + 2) { px in
+            withUnsafeTemporaryAllocation(of: UInt32.self, capacity: HiresScreen.width) { colours in
                 withUnsafeTemporaryAllocation(of: Int16.self, capacity: width) { dots in
                     hiresColours.withUnsafeBufferPointer { palette in
                         gapColours.withUnsafeBufferPointer { gaps in
-                            let px = line.baseAddress!, colour = colours.baseAddress!, dot = dots.baseAddress!
-                            let palette = palette.baseAddress!, gaps = gaps.baseAddress!
-                            for y in lines {
-                                let row = m + hiresAddress(line: y, page2: page2)
-                                decode(row, into: px)
-                                let o = out + y * width
-                                switch style {
-                                case .filled:
-                                    for x in 0 ..< 280 {
-                                        let c = filledColour(px, x, palette: palette, gaps: palette)
-                                        o[2 * x] = c
-                                        o[2 * x + 1] = c
-                                    }
-                                case .color, .monochrome:
-                                    for x in 0 ..< 280 {
-                                        colour[x] = style == .monochrome ? (px[x + 1] & 1 != 0 ? green : black)
-                                            : filledColour(px, x, palette: palette, gaps: gaps)
-                                    }
-                                    hiresDots(of: row, into: dot)
-                                    for d in 0 ..< width { o[d] = dot[d] >= 0 ? colour[Int(dot[d])] : black }
-                                }
-                            }
+                            body(HiresLine(px: px.baseAddress!, colour: colours.baseAddress!, dot: dots.baseAddress!,
+                                           palette: palette.baseAddress!, gaps: gaps.baseAddress!))
                         }
                     }
                 }
@@ -181,69 +214,92 @@ public nonisolated enum Screen {
         }
     }
 
-    /// Pixel `x`'s colour filled in, as a colour monitor shows a colour's
-    /// pixels from afar: a lit pixel white next to another lit pixel, else
-    /// its palette colour; an unlit one between two lit ones – a gap in a
-    /// colour – the colour they make, from `gaps`; any other black.  `px` as
-    /// `decode` leaves it.
-    @inline(__always)
-    private static func filledColour(_ px: UnsafeMutablePointer<UInt8>, _ x: Int,
-                                     palette: UnsafePointer<UInt32>, gaps: UnsafePointer<UInt32>) -> UInt32 {
-        let p = px[x + 1], left = px[x], right = px[x + 2]
-        if p & 1 != 0 { return (left | right) & 1 != 0 ? white : palette[Int(p & 2) + (x & 1)] }
-        if left & right & 1 != 0 { return gaps[Int(p & 2) + ((x - 1) & 1)] }
-        return black
-    }
+    /// Draws a hi-res line, from its 40 bytes, in room it doesn't allocate:
+    /// runs on every frame shown, so on pointers (a Debug build's array
+    /// checks made a screen take 40 ms).
+    private struct HiresLine {
+        /// The line's pixels with a blank one on either side (282): bit 0
+        /// on, bit 1 the palette bit (`decode`).
+        let px: UnsafeMutablePointer<UInt8>
+        /// Each pixel's colour (280).
+        let colour: UnsafeMutablePointer<UInt32>
+        /// Each dot's pixel (560, `HiresScreen.dots`).
+        let dot: UnsafeMutablePointer<Int16>
+        let palette: UnsafePointer<UInt32>
+        let gaps: UnsafePointer<UInt32>
 
-    /// A line's pixels into `px` with a blank one on either side (282): bit 0
-    /// on, bit 1 the palette bit.
-    @inline(__always)
-    private static func decode(_ row: UnsafePointer<UInt8>, into px: UnsafeMutablePointer<UInt8>) {
-        px[0] = 0
-        px[281] = 0
-        for b in 0 ..< 40 {
-            let v = row[b], pal = v >> 6 & 2
-            for i in 0 ..< 7 { px[1 + b * 7 + i] = v >> i & 1 | pal }
+        /// The line in its 560 dots.  A lit pixel's dots in its colour –
+        /// white next to another lit pixel, else its palette colour; green on
+        /// the monochrome screen –, a colour's gaps in a dark shade of it
+        /// (`Style.color`), every other dot black; a byte with the palette
+        /// bit set half a pixel to the right (`HiresScreen.dots`).
+        /// `Style.filled`: gaps filled, nothing shifted.
+        @inline(__always)
+        func draw(_ row: UnsafePointer<UInt8>, style: Style, into o: UnsafeMutablePointer<UInt32>) {
+            decode(row)
+            switch style {
+            case .filled:
+                for x in 0 ..< HiresScreen.width {
+                    let c = filledColour(x, gaps: palette)
+                    o[2 * x] = c
+                    o[2 * x + 1] = c
+                }
+            case .color, .monochrome:
+                for x in 0 ..< HiresScreen.width {
+                    colour[x] = style == .monochrome ? (px[x + 1] & 1 != 0 ? green : black) : filledColour(x, gaps: gaps)
+                }
+                HiresScreen.dots(of: row, into: dot)
+                for d in 0 ..< width { o[d] = dot[d] >= 0 ? colour[Int(dot[d])] : black }
+            }
         }
-    }
 
-    /// Which pixel of its line (0-279) each of a line's 560 dots shows, -1
-    /// none (black), from the line's 40 bytes.  A byte's 7 pixels take the 14
-    /// dots from its column's first (column × 14) on; a byte whose palette
-    /// bit is set is shown one dot later, half a pixel to the right (the
-    /// video loads it a 14 MHz clock late).  The dot that skips holds the
-    /// dot before it (the previous byte's last pixel; nothing at the line's
-    /// start), and the delayed byte's last pixel's second dot is the next
-    /// byte's first, which a byte not delayed takes (off the line's end:
-    /// lost).
-    static func hiresDots(of line: UnsafePointer<UInt8>, into dots: UnsafeMutablePointer<Int16>) {
-        for column in 0 ..< 40 {
-            let first = column * 14, pixel = column * 7
-            if line[column] & 0x80 == 0 {
-                for d in 0 ..< 14 { dots[first + d] = Int16(pixel + d >> 1) }
-            } else {
-                dots[first] = column == 0 ? -1 : dots[first - 1]
-                for d in 1 ... min(14, width - 1 - first) { dots[first + d] = Int16(pixel + (d - 1) >> 1) }
+        /// The line a pixel a pixel (280), filled in.
+        @inline(__always)
+        func thumbnail(_ row: UnsafePointer<UInt8>, style: Style, into o: UnsafeMutablePointer<UInt32>) {
+            decode(row)
+            for x in 0 ..< HiresScreen.width {
+                o[x] = style == .monochrome ? (px[x + 1] & 1 != 0 ? green : black) : filledColour(x, gaps: palette)
+            }
+        }
+
+        /// Pixel `x`'s colour filled in, as a colour monitor shows a colour's
+        /// pixels from afar: a lit pixel white next to another lit pixel, else
+        /// its palette colour; an unlit one between two lit ones – a gap in a
+        /// colour – the colour they make, from `gaps`; any other black.
+        @inline(__always)
+        private func filledColour(_ x: Int, gaps: UnsafePointer<UInt32>) -> UInt32 {
+            let p = px[x + 1], left = px[x], right = px[x + 2]
+            if p & 1 != 0 { return (left | right) & 1 != 0 ? white : palette[Int(p & 2) + (x & 1)] }
+            if left & right & 1 != 0 { return gaps[Int(p & 2) + ((x - 1) & 1)] }
+            return black
+        }
+
+        @inline(__always)
+        private func decode(_ row: UnsafePointer<UInt8>) {
+            px[0] = 0
+            px[HiresScreen.width + 1] = 0
+            for b in 0 ..< HiresScreen.bytesPerLine {
+                let v = row[b], pal = v >> 6 & 2
+                for i in 0 ..< 7 { px[1 + b * 7 + i] = v >> i & 1 | pal }
             }
         }
     }
 
     /// 560 × 192 RGBA pixels as an image (`rowsTwice`: 560 × 384, each line twice).
     static func image(_ pixels: [UInt32], rowsTwice: Bool = false) -> CGImage? {
-        var data = pixels.withUnsafeBytes { Data($0) }
-        if rowsTwice {
-            let line = width * 4
-            var doubled = Data(capacity: data.count * 2)
-            for y in 0 ..< height {
-                let row = data[y * line ..< (y + 1) * line]
-                doubled.append(row)
-                doubled.append(row)
-            }
-            data = doubled
+        guard rowsTwice else { return image(pixels, width: width, height: height) }
+        var doubled = [UInt32](repeating: 0, count: pixels.count * 2)
+        for y in 0 ..< height {
+            doubled.replaceSubrange(2 * y * width ..< (2 * y + 1) * width, with: pixels[y * width ..< (y + 1) * width])
+            doubled.replaceSubrange((2 * y + 1) * width ..< (2 * y + 2) * width, with: pixels[y * width ..< (y + 1) * width])
         }
-        let h = rowsTwice ? height * 2 : height
-        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
-        return CGImage(width: width, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+        return image(doubled, width: width, height: height * 2)
+    }
+
+    /// `w` × `h` RGBA pixels as an image.
+    static func image(_ pixels: [UInt32], width w: Int, height h: Int) -> CGImage? {
+        guard let provider = CGDataProvider(data: pixels.withUnsafeBytes { Data($0) } as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                        space: CGColorSpaceCreateDeviceRGB(),
                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
@@ -268,6 +324,11 @@ nonisolated extension Apple2 {
     /// The display now: 560 × 192, or 560 × 384 with `rowsTwice`.
     public func screenImage(style: Screen.Style, rowsTwice: Bool = false) -> CGImage? {
         Screen.image(screenPixels(style: style), rowsTwice: rowsTwice)
+    }
+
+    /// Hi-res page 1 or 2 (`page2`; nil: the one shown) as a screen.
+    public func hiresScreen(page2: Bool? = nil) -> HiresScreen {
+        HiresScreen(cpu.mem, base: page2 ?? video.page2 ? 0x4000 : 0x2000)
     }
 
     /// The text page as text, 24 lines of 40 (the page shown, or page 1),

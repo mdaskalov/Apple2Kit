@@ -5,11 +5,18 @@ import MOS6502
 /// Apple //e with 64K (no aux memory: 40 columns), and a Disk II card in
 /// slot 6, on the `MOS6502` CPU.
 ///
-/// $0000-$BFFF is the CPU's own flat memory (`cpu.mem`); every page from $C0
-/// up goes through `read`/`write` (the CPU's I/O pages): the soft switches,
-/// the slot ROMs and the language card's RAM or the ROM at $D000-$FFFF
+/// $0000-$BFFF is the CPU's own flat memory (`cpu.mem`); $C000-$CFFF goes
+/// through `read`/`write` (the CPU's I/O pages): the soft switches and the
+/// slot ROMs; $D000-$FFFF too while the ROM is read there or the language
+/// card's RAM is write-protected – while that RAM is read and written, it
+/// lies in `cpu.mem` (`mapLanguageCard`), as fast as the rest
 /// (Docs/Hardware.md).  `run` runs the CPU; the display is drawn from
 /// memory when asked (`Screen`).
+///
+/// Without ROMs (`init` with nil) the machine is a host's: the language
+/// card's RAM is always read and written ($C080-$C08F pick the bank only),
+/// the slots' ROM pages are empty but the cards' (`insert`), nothing
+/// boots – the host loads memory (`load`) and sets the CPU going.
 public nonisolated final class Apple2 {
     public enum Model: String, CaseIterable, Identifiable, Sendable {
         /// Integer BASIC and the original monitor: no autostart, RESET goes
@@ -44,11 +51,24 @@ public nonisolated final class Apple2 {
 
     public let model: Model
     public let cpu: CPU6502
-    public let disk = DiskII()
+    public private(set) var disk = DiskII()
     public private(set) var video = VideoMode()
-    private let rom: [UInt8]
-    private let diskROM: [UInt8]
-    private var languageCard = LanguageCard()
+    /// Nil: none (the language card's RAM in its place).
+    private let rom: [UInt8]?
+    private let diskROM: [UInt8]?
+    private var languageCard: LanguageCard
+    /// The $D000 bank of the language card's RAM that lies in `cpu.mem`
+    /// with $E000-$FFFF (true: bank 2); nil: none, `languageCard.ram` holds
+    /// it all and the CPU reaches $D000-$FFFF through `read`/`write`.
+    private var mappedBank2: Bool?
+    /// The cards in slots 1-7 (`insert`); the Disk II in slot 6 is the machine's.
+    public private(set) var cards = [Apple2Card?](repeating: nil, count: 8)
+    /// The host's own soft switches (`io`): called at every access to
+    /// $C000-$C0FF before the machine's own handling, with the address,
+    /// whether it writes, and the value written.  A value: the access is the
+    /// host's, a read returns it and the machine does nothing; nil: the
+    /// machine's.
+    public var ioHook: ((_ address: UInt16, _ write: Bool, _ value: UInt8) -> UInt8?)?
     /// The //e's memory and ROM switches.
     private var iie = IIeSwitches()
     var isIIe: Bool { model == .apple2e }
@@ -67,18 +87,22 @@ public nonisolated final class Apple2 {
     private(set) var speakerClicks = 0
     /// The CPU cycle of every click since the last `takeClicks`, when not
     /// nil (the app's sound: `SpeakerStream`).
-    var clicks: [UInt64]?
+    public var clicks: [UInt64]?
     /// The Disk II boot ROM stays out of $C600 until the code reads the
     /// keyboard (`startBASIC`), so the autostart ROM finds no disk to boot.
     private var diskROMHidden = false
 
-    public init(model: Model, rom: [UInt8], diskROM: [UInt8]) {
-        precondition(rom.count == model.romSize,
+    /// A machine of `model`; `rom` nil: none, the language card's RAM in its
+    /// place (the host's machine, see above); `diskROM` nil: the Disk II
+    /// doesn't boot.
+    public init(model: Model, rom: [UInt8]?, diskROM: [UInt8]?) {
+        precondition(rom.map { $0.count == model.romSize } ?? true,
                      "a 12K ROM for $D000-$FFFF (the //e: 16K for $C000-$FFFF)")
-        precondition(diskROM.count == 0x100, "the 256-byte Disk II boot ROM")
+        precondition(diskROM.map { $0.count == 0x100 } ?? true, "the 256-byte Disk II boot ROM")
         self.model = model
         self.rom = rom
         self.diskROM = diskROM
+        languageCard = LanguageCard(ramOnly: rom == nil)
         cpu = CPU6502(memory: [UInt8](repeating: 0, count: 0x10000))
         for page in 0xC0 ... 0xFF { cpu.ioPages[page] = true }
         cpu.ioRead = { [unowned self] in read($0) }
@@ -91,8 +115,11 @@ public nonisolated final class Apple2 {
     /// Switches the machine off and on: RAM cleared, switches as at power-up,
     /// the CPU through the RESET vector (the ][+ boots the disk in drive 1).
     public func powerOn() {
+        unmapLanguageCard()
         cpu.mem.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
-        languageCard = LanguageCard()
+        languageCard = LanguageCard(ramOnly: rom == nil)
+        mapLanguageCard()
+        for slot in 1 ... 7 where cards[slot] != nil { putROMPage(slot) }
         setIIeSwitches(IIeSwitches())
         video = VideoMode()
         keyboard = 0
@@ -114,6 +141,7 @@ public nonisolated final class Apple2 {
     /// goes back to ROM.
     public func reset() {
         languageCard.reset()
+        mapLanguageCard()
         setIIeSwitches(IIeSwitches())
         video.altCharset = false
         cpu.reset()
@@ -155,7 +183,7 @@ public nonisolated final class Apple2 {
     // MARK: speaker
 
     /// The clicks since the last call, in order (empty unless `clicks` is set).
-    func takeClicks() -> [UInt64] {
+    public func takeClicks() -> [UInt64] {
         guard let taken = clicks else { return [] }
         clicks = []
         return taken
@@ -172,12 +200,15 @@ public nonisolated final class Apple2 {
 
     private func read(_ a: UInt16) -> UInt8 {
         if a >= 0xD000 {
-            return languageCard.readsRAM ? languageCard.ram[languageCard.offset(a)] : rom[Int(a) - 0xD000 + romOffset]
+            guard !languageCard.readsRAM, let rom else { return languageCard.ram[languageCard.offset(a)] }
+            return rom[Int(a) - 0xD000 + romOffset]
         }
         if a < 0xC000 { return iie.ramRead ? 0 : cpu.mem[Int(a)] }    // //e: no aux memory
         if a < 0xC100 { return io(a, write: false, value: 0) }
         if isIIe, let byte = internalROM(a) { return byte }
-        if a >> 8 == 0xC0 + Apple2.diskSlot, disk.hasDisk, !diskROMHidden { return diskROM[Int(a & 0xFF)] }
+        let slot = Int(a >> 8) - 0xC0
+        if slot < 8, cards[slot] != nil { return cpu.mem[Int(a)] }     // its ROM page (`insert`)
+        if slot == Apple2.diskSlot, disk.hasDisk, !diskROMHidden, let diskROM { return diskROM[Int(a & 0xFF)] }
         return 0                                // empty slots, no $C800 ROM
     }
 
@@ -194,12 +225,13 @@ public nonisolated final class Apple2 {
     }
 
     /// Where the $D000-$FFFF ROM starts in `rom` (the //e's has $C000-$CFFF first).
-    private var romOffset: Int { rom.count - 0x3000 }
+    private var romOffset: Int { (rom?.count ?? 0x3000) - 0x3000 }
 
     /// The //e's own ROM at $C100-$CFFF, where it is switched in: all of it
     /// (INTCXROM); $C300 (the 80-column firmware) unless SLOTC3ROM, which
     /// also brings in its $C800-$CFFF until $CFFF is touched.  Nil: the slots'.
     private func internalROM(_ a: UInt16) -> UInt8? {
+        guard let rom else { return nil }
         let byte = rom[Int(a) - 0xC000]
         let page = a >> 8
         defer { if a == 0xCFFF { iie.intC8ROM = false } }
@@ -264,6 +296,7 @@ public nonisolated final class Apple2 {
 
     /// $C000-$C0FF: a read, or a write of `value`; both throw the switches.
     private func io(_ a: UInt16, write: Bool, value: UInt8) -> UInt8 {
+        if let ioHook, let byte = ioHook(a, write, value) { return byte }
         let low = Int(a & 0xFF)
         switch low >> 4 {
         case 0x0:
@@ -292,10 +325,13 @@ public nonisolated final class Apple2 {
             paddleTrigger = cpu.cycles
         case 0x8:
             languageCard.access(low, write: write)
+            mapLanguageCard()
         case 0x8 + Apple2.diskSlot:
             return disk.access(low & 0xF, write: write, value: value, cycles: cpu.cycles)
+        case 0x9 ... 0xF:
+            return cards[(low >> 4) - 8]?.access(low & 0xF, write: write, value: value, cycles: cpu.cycles) ?? 0
         default:
-            break                               // cassette out, strobe, empty slots
+            break                               // cassette out, strobe
         }
         return 0
     }
@@ -303,15 +339,139 @@ public nonisolated final class Apple2 {
     // MARK: inspecting
 
     /// The 16K of the language card: $D000 bank 1, $D000 bank 2, $E000-$FFFF.
-    public var languageCardRAM: [UInt8] { languageCard.ram }
+    public var languageCardRAM: [UInt8] {
+        guard let bank2 = mappedBank2 else { return languageCard.ram }
+        var ram = languageCard.ram
+        ram.replaceSubrange(bank2 ? 0x1000 ..< 0x2000 : 0 ..< 0x1000, with: cpu.mem[0xD000 ..< 0xE000])
+        ram.replaceSubrange(0x2000 ..< 0x4000, with: cpu.mem[0xE000 ..< 0x10000])
+        return ram
+    }
+
+    /// The language card's $D000 bank selected: 1 or 2.
+    public var languageCardBank: Int { languageCard.bank2 ? 2 : 1 }
+
+    /// The language card's RAM is read at $D000-$FFFF (not the ROM).
+    public var readsLanguageCardRAM: Bool { languageCard.readsRAM }
 
     /// What the CPU reads at `address`, without throwing a switch ($C0xx
     /// reads as 0).
     public func peek(_ address: UInt16) -> UInt8 {
-        address >= 0xD000 ? read(address) : address >= 0xC000 ? 0 : cpu.mem[Int(address)]
+        address >= 0xD000 ? (cpu.ioPages[Int(address >> 8)] ? read(address) : cpu.mem[Int(address)])
+            : address >= 0xC000 ? 0 : cpu.mem[Int(address)]
     }
 
     var languageCardState: String { languageCard.description }
+
+    // MARK: the host's
+
+    /// Puts `memory` in main RAM ($0000-$BFFF; a 64K image's rest is left
+    /// out) and `languageCard` (16K, as `languageCardRAM`) in the language
+    /// card's RAM; the switches stay.
+    public func load(memory: [UInt8], languageCard ram: [UInt8]) {
+        precondition(memory.count >= 0xC000 && ram.count == 0x4000, "48K (or 64K) of main RAM and the card's 16K")
+        unmapLanguageCard()
+        cpu.mem.replaceSubrange(0 ..< 0xC000, with: memory[0 ..< 0xC000])
+        languageCard.ram = ram
+        mapLanguageCard()
+    }
+
+    /// Puts `card` in `slot` (1-7, not the Disk II's 6), or takes the card
+    /// there out (nil): its ROM page is read at $Cn00-$CnFF, its switches
+    /// are $C080 + slot × 16 on.
+    public func insert(_ card: Apple2Card?, slot: Int) {
+        precondition((1 ... 7).contains(slot) && slot != Apple2.diskSlot, "slots 1-7 but the Disk II's")
+        cards[slot] = card
+        putROMPage(slot)
+    }
+
+    /// A card's ROM page lies in `cpu.mem` at $Cn00 (the CPU reads it
+    /// through `read`, a host's code there as on the Apple): an empty slot's
+    /// is zeros.
+    private func putROMPage(_ slot: Int) {
+        let page = 0xC000 | slot << 8
+        let bytes = cards[slot]?.romPage ?? []
+        precondition(bytes.isEmpty || bytes.count == 0x100, "a card's ROM page is 256 bytes")
+        cpu.mem.replaceSubrange(page ..< page + 0x100, with: bytes.isEmpty ? [UInt8](repeating: 0, count: 0x100) : bytes)
+    }
+
+    /// An independent machine in the same state: memory, the switches, the
+    /// devices, the drives and their disks, the CPU's registers and cycles.
+    /// The cards are the same (a card keeps its own state); the host's
+    /// `ioHook` and the CPU's traps and watches aren't copied.
+    public func copy() -> Apple2 {
+        let c = Apple2(model: model, rom: rom, diskROM: diskROM)
+        c.cpu.mem = cpu.mem
+        c.cpu.ioPages = cpu.ioPages
+        (c.cpu.a, c.cpu.x, c.cpu.y, c.cpu.sp, c.cpu.p, c.cpu.pc, c.cpu.cycles) = (cpu.a, cpu.x, cpu.y, cpu.sp, cpu.p, cpu.pc, cpu.cycles)
+        c.cpu.stopsAtBRK = cpu.stopsAtBRK
+        c.languageCard = languageCard
+        c.mappedBank2 = mappedBank2
+        c.cards = cards
+        c.disk = disk.copy()
+        c.video = video
+        c.iie = iie
+        c.keyboard = keyboard
+        c.typeAhead = typeAhead
+        c.nextTypedKey = nextTypedKey
+        c.buttons = buttons
+        c.paddles = paddles
+        c.paddleTrigger = paddleTrigger
+        c.speakerClicks = speakerClicks
+        c.clicks = clicks
+        c.diskROMHidden = diskROMHidden
+        return c
+    }
+
+    // MARK: the language card in flat memory
+
+    /// The language card's RAM in `cpu.mem` while it is read and written
+    /// (the selected $D000 bank and $E000-$FFFF; $D0-$FF no I/O pages): the
+    /// CPU reaches it at full speed, and a host reads it there like the rest
+    /// of memory.  Otherwise `languageCard.ram` holds it and the CPU goes
+    /// through `read`/`write` (the ROM, or RAM write-protected).  Called after
+    /// every switch of the card; a bank switch swaps $D000-$DFFF.
+    private func mapLanguageCard() {
+        let flat = languageCard.readsRAM && languageCard.writesRAM
+        let bank2 = languageCard.bank2
+        if let mapped = mappedBank2 {
+            if flat && mapped == bank2 { return }
+            languageCard.ram.replaceSubrange(mapped ? 0x1000 ..< 0x2000 : 0 ..< 0x1000, with: cpu.mem[0xD000 ..< 0xE000])
+            if !flat { unmapLanguageCard() }
+        }
+        guard flat else { return }
+        cpu.mem.replaceSubrange(0xD000 ..< 0xE000, with: languageCard.ram[bank2 ? 0x1000 ..< 0x2000 : 0 ..< 0x1000])
+        if mappedBank2 == nil {
+            cpu.mem.replaceSubrange(0xE000 ..< 0x10000, with: languageCard.ram[0x2000 ..< 0x4000])
+            for page in 0xD0 ... 0xFF { cpu.ioPages[page] = false }
+        }
+        mappedBank2 = bank2
+    }
+
+    /// The language card's RAM back from `cpu.mem` into `languageCard.ram`,
+    /// $D0-$FF I/O pages again.
+    private func unmapLanguageCard() {
+        guard let bank2 = mappedBank2 else { return }
+        languageCard.ram.replaceSubrange(bank2 ? 0x1000 ..< 0x2000 : 0 ..< 0x1000, with: cpu.mem[0xD000 ..< 0xE000])
+        languageCard.ram.replaceSubrange(0x2000 ..< 0x4000, with: cpu.mem[0xE000 ..< 0x10000])
+        for page in 0xD0 ... 0xFF { cpu.ioPages[page] = true }
+        mappedBank2 = nil
+    }
+}
+
+/// A card in a slot of an `Apple2` (`insert`): its ROM page at $Cn00-$CnFF
+/// and its 16 switches at $C080 + slot × 16 ($C0n0-$C0nF, n = slot + 8).  A
+/// host can run the card's firmware as its own code where the CPU gets there
+/// (the CPU's traps).
+public nonisolated protocol Apple2Card: AnyObject {
+    /// The 256 bytes at $Cn00-$CnFF.
+    var romPage: [UInt8] { get }
+    /// Switch `n` (0-15) read, or written with `value`, at CPU cycle `cycles`.
+    func access(_ n: Int, write: Bool, value: UInt8, cycles: UInt64) -> UInt8
+}
+
+public nonisolated extension Apple2Card {
+    /// No switches: they read 0.
+    func access(_ n: Int, write: Bool, value: UInt8, cycles: UInt64) -> UInt8 { 0 }
 }
 
 /// The display switches $C050-$C057 (and the //e's ALTCHARSET).
@@ -354,15 +514,22 @@ nonisolated struct IIeSwitches {
 nonisolated struct LanguageCard: CustomStringConvertible {
     /// $0000: $D000 bank 1, $1000: $D000 bank 2, $2000: $E000-$FFFF.
     var ram = [UInt8](repeating: 0, count: 0x4000)
-    private(set) var readsRAM = false
+    /// No ROM behind it: always read and written, the switches pick the bank only.
+    let ramOnly: Bool
+    private(set) var readsRAM: Bool
     private(set) var writesRAM = true
     private(set) var bank2 = true
     /// An odd switch was read: a second read in a row enables writing.
     private var preWrite = false
 
-    /// As after RESET: read ROM, write RAM, bank 2.
+    init(ramOnly: Bool) {
+        self.ramOnly = ramOnly
+        readsRAM = ramOnly
+    }
+
+    /// As after RESET: read ROM (with none: RAM), write RAM, bank 2.
     mutating func reset() {
-        readsRAM = false
+        readsRAM = ramOnly
         writesRAM = true
         bank2 = true
         preWrite = false
@@ -372,6 +539,7 @@ nonisolated struct LanguageCard: CustomStringConvertible {
     /// bit 0 set: two reads in a row enable writing; bit 0 clear disables it.
     mutating func access(_ n: Int, write: Bool) {
         bank2 = n & 8 == 0
+        guard !ramOnly else { return }
         readsRAM = n & 1 == n >> 1 & 1
         if n & 1 != 0 {
             if !write && preWrite { writesRAM = true }

@@ -66,6 +66,19 @@ public nonisolated final class DiskII {
         return motorOn
     }
 
+    /// An independent controller in the same state, with copies of the
+    /// drives and their disks (`Apple2.copy`).
+    func copy() -> DiskII {
+        let c = DiskII()
+        for (mine, theirs) in zip(drives, c.drives) {
+            (theirs.image, theirs.halfTrack, theirs.phases) = (mine.image, mine.halfTrack, mine.phases)
+            (theirs.position, theirs.writeProtected) = (mine.position, mine.writeProtected)
+        }
+        (c.selected, c.motor, c.motorStops, c.now) = (selected, motor, motorStops, now)
+        (c.q6, c.q7, c.latch, c.latchCycle, c.latchRead) = (q6, q7, latch, latchCycle, latchRead)
+        return c
+    }
+
     /// The controller as after a power cycle (the drives keep their disks).
     func reset() {
         motor = false

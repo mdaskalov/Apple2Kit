@@ -11,14 +11,19 @@ Disk II controller in slot 6. Code: `Sources/Apple2Kit/Emulator/Apple2.swift`.
 | $0400‑$07FF / $0800‑$0BFF | text and lo‑res page 1 / 2 | (RAM) |
 | $2000‑$3FFF / $4000‑$5FFF | hi‑res page 1 / 2 | (RAM) |
 | $C000‑$C0FF | soft switches, slot I/O | `io` |
-| $C100‑$C7FF | slot ROMs: only $C600 (Disk II boot ROM), the rest reads 0 | `read` |
+| $C100‑$C7FF | slot ROMs: $C600 (Disk II boot ROM) and the cards' (`insert`, their page in `cpu.mem`), the rest reads 0 | `read` |
 | $C800‑$CFFF | slots' shared ROM: none, reads 0 | `read` |
-| $D000‑$FFFF | ROM (12K), or the language card's RAM | `read`/`write`, `LanguageCard` |
+| $D000‑$FFFF | ROM (12K), or the language card's RAM | `read`/`write`, `LanguageCard`; RAM read and written: `cpu.mem` |
 
 The `MOS6502` CPU has a flat 64K `mem`. Every page from $C0 up is one of its
 *I/O pages* (`cpu.ioPages`): reads and writes there go through
 `Apple2.read`/`write`, which picks the switch, the ROM or the language card's
-RAM. Below $C000 nothing is in the way: the hot path (zero page, stack,
+RAM – but while the language card's RAM is read and written, it lies in
+`mem` itself (the selected $D000 bank and $E000‑$FFFF, `mapLanguageCard`;
+a bank switch swaps $D000‑$DFFF) and $D0‑$FF are no I/O pages: code in the
+card's RAM runs as fast as below $C000, and a host reads it in place.
+Without ROMs (`Apple2(model:, rom: nil, diskROM: nil)`, a host's machine)
+it always is.  A host's own switches go first (`ioHook`). Below $C000 nothing is in the way: the hot path (zero page, stack,
 program code in RAM) is a plain array access. Code running in ROM (BASIC,
 the monitor) goes through a closure on every fetch. That is fast enough
 (about 100× real time in a release build).
@@ -177,7 +182,7 @@ case (MouseText, the enhanced //e's, isn't there).
 **Hi‑res lines:** line y starts at
 `page + (y mod 8) × $400 + ((y div 8) mod 8) × $80 + (y div 64) × $28`.
 Each byte holds 7 pixels (bit 0 leftmost) plus a palette bit (bit 7).
-Colours (`Screen.drawHires`, `filledColour`):
+Colours (`Screen.HiresLine`: `draw`, `filledColour`):
 
 * a lit pixel next to another lit one: white;
 * a lit pixel alone: violet/green (palette bit clear) or blue/orange (set),

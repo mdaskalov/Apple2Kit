@@ -42,6 +42,20 @@ struct ContentView: View {
   takes the keys while focused (Platforms, below). `style`: `.color`, `.filled`, `.monochrome`.
   `scale`: points per Apple dot (1, 2, 3…), or nil for any size at the
   screen's aspect ratio.
+* Without the UI, for a host that runs its own loop (the emulator core,
+  `Sources/Apple2Kit/Emulator`): `Apple2` (`run(cycles:)`, `clicks` /
+  `takeClicks()` for the speaker, `hiresScreen()`), `HiresScreen` (a page's
+  8K as lines, `dots(of:into:)`), `Screen.image` / `Screen.thumbnail` (a
+  `HiresScreen` in a `Screen.Style`; the colours as `Screen.RGB`),
+  `SpeakerRenderer` / `SpeakerStream` (clicks → samples) and `SoundPlayer`
+  (streamed clicks, or a whole sound's samples).
+* A host's machine: `Apple2(model:, rom: nil, diskROM: nil)` has no ROMs
+  (the language card's RAM always read and written, $C080‑$C08F pick the
+  bank); `load(memory:languageCard:)` fills it; `insert(_:slot:)` puts an
+  `Apple2Card` (its ROM page, its switches) in a slot; `ioHook` takes
+  soft switches of $C000‑$C0FF over; `copy()` makes an independent machine.
+  The language card's RAM, while read and written, lies in `cpu.mem` at
+  $D000‑$FFFF (`languageCardRAM` has all 16K, `languageCardBank` the bank).
 * A binary is the file's bytes alone, as `Data/dsk.py extract` writes it;
   `load` jumps to it as `BRUN` does (RTS: the monitor's `*`).
   Without an address, `load` takes it from the name (`NAME#06XXXX.bin`, which
