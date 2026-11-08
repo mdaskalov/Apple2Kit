@@ -17,41 +17,78 @@ import Apple2Kit
 import SwiftUI
 
 struct ContentView: View {
-    @State private var emulator = EmulatorModel()          // ][+, Applesoft
+    @State private var apple = Apple2(model: .apple2Plus)  // ][+, Applesoft
 
     var body: some View {
-        Apple2View(emulator, style: .color, scale: 2)     // scale nil: any size, 280:192
+        Apple2View(apple, style: .color, scale: 2)         // scale nil: any size, 280:192
             .background(.black)
-            .onAppear {
-                emulator.insert(diskURL, drive: 0, boot: true)       // boot a disk
-                // or: emulator.load(binaryURL, at: 0x4000, run: true)  // a binary, BRUN
-                // or: emulator.startBASIC()                           // whatever is in the ROM
+            .task {
+                apple.insert(diskURL, boot: true)            // boot a disk
+                // or: apple.load(binaryURL, at: 0x4000)      // a binary, BRUN
+                // or: apple.startBASIC()                     // whatever is in the ROM
             }
     }
 }
 ```
 
-* `EmulatorModel(model: .apple2Plus / .apple2 / .apple2e)`: the machine. `restart()`
+A game that needs no ROM (its own code, its own disk routines) runs
+without them, on a blank screen:
+
+```swift
+@State private var apple = Apple2(model: .apple2Plus, roms: .none)
+…
+Apple2View(apple).task {
+    apple.print("Loading...")                    // centred on the text screen
+    apple.insert(diskURL)                        // drive 1, not booted
+    apple.load(binaryURL, at: 0x0DFB)
+}
+```
+
+Without ROMs nothing runs before `load`, so text `print`ed first stays on
+the screen until the program switches to graphics. (With ROMs, `load` on a
+fresh machine first runs the ROM's start‑up, which clears the screen: print
+after it.)
+
+Or the view holds a machine of its own, set up once when it first appears
+(for an app that doesn't touch the machine again):
+
+```swift
+Apple2View(.apple2, roms: .none) { apple in
+    apple.load(binaryURL, at: 0x1100)
+}
+```
+
+Two types: `Apple2` is what an app holds – the machine run in real time,
+with sound, disks, binaries and a status for a UI (`@Observable`).
+`Apple2Machine` (`apple.machine`) is the hardware alone – CPU, memory,
+switches, drives, cards – with no clock, sound or UI, also used headless.
+
+* `Apple2(model: .apple2Plus / .apple2 / .apple2e, roms: .bundle / .directory(url) / .none)`:
+  the machine as the app runs it. `restart()`
   (power cycle: boots drive 1), `startBASIC()`, `reset()` (Ctrl‑RESET),
   `togglePause()`, `step()`; `insert` / `eject` / `diskFileData` for disks;
-  `load(url or bytes, at:, run:)` for binaries; `type(_:)`, `screenText`,
+  `load(url or bytes, at:, run:)` for binaries; `print(_:atX:y:uppercased:cls:)`
+  (row 0‑23, centred without `atX`, cut off at the row's ends; capitals on
+  the ][ and ][+) and `cls()` on text page 1; `type(_:)`, `screenText`,
   `memoryDump`; `sound`, `fastDisk`, `model`; status for a UI: `drives`,
-  `registers`, `videoMode`, `speed`, `paused`, `message`; `machine` for the
-  rest.
-* `Apple2View(emulator, style:, scale:)`: shows and runs it (a display link),
+  `registers`, `videoMode`, `speed`, `paused`, `message`; `machine` (the
+  hardware, an `Apple2Machine`) for the rest.
+* `Apple2View(apple, style:, scale:)`: shows and runs it (a display link),
   takes the keys while focused (Platforms, below). `style`: `.color`, `.filled`, `.monochrome`.
   `scale`: points per Apple dot (1, 2, 3…), or nil for any size at the
-  screen's aspect ratio.
+  screen's aspect ratio. `Apple2View(model, roms:, style:, scale:) { setup }`:
+  with a machine of its own, made and set up once.
 * Without the UI, for a host that runs its own loop (the emulator core,
-  `Sources/Apple2Kit/Emulator`): `Apple2` (`run(cycles:)`, `clicks` /
+  `Sources/Apple2Kit/Emulator`): `Apple2Machine` (from
+  `ROMs.machine(model, roms:)`; `run(cycles:)`, `print`/`cls`, `clicks` /
   `takeClicks()` for the speaker, `hiresScreen()`), `HiresScreen` (a page's
   8K as lines, `dots(of:into:)`), `Screen.image` / `Screen.thumbnail` (a
   `HiresScreen` in a `Screen.Style`; the colours as `Screen.RGB`),
   `SpeakerRenderer` / `SpeakerStream` (clicks → samples) and `SoundPlayer`
   (streamed clicks, or a whole sound's samples).
-* A host's machine: `Apple2(model:, rom: nil, diskROM: nil)` has no ROMs
-  (the language card's RAM always read and written, $C080‑$C08F pick the
-  bank); `load(memory:languageCard:)` fills it; `insert(_:slot:)` puts an
+* A host's machine: `Apple2Machine(model:, rom: nil, diskROM: nil)` (or
+  `roms: .none`) has no ROMs (the language card's RAM always read and
+  written, $C080‑$C08F pick the bank; the text page starts blank); `load(memory:languageCard:)` fills it; `insert(_:slot:)` puts an
   `Apple2Card` (its ROM page, its switches) in a slot; `ioHook` takes
   soft switches of $C000‑$C0FF over; `copy()` makes an independent machine.
   The language card's RAM, while read and written, lies in `cpu.mem` at
@@ -61,7 +98,56 @@ struct ContentView: View {
   Without an address, `load` takes it from the name (`NAME#06XXXX.bin`, which
   `dsk.py extract` writes), else $0800.
 
-`swift test` runs the tests (Applesoft, a binary loaded and run; ROMs below).
+### Examples
+
+```swift
+// where the ROMs come from
+let apple = Apple2(model: .apple2e)                              // the app's bundle
+let apple = Apple2(model: .apple2e, roms: .directory(romsURL))   // a folder
+let apple = Apple2(model: .apple2Plus, roms: .none)              // none: a blank screen
+
+// text on the screen (text page 1, 40 × 24)
+apple.print("Loading...")                            // centred on row 12, the screen cleared first
+apple.print("PRESS ANY KEY", y: 23, cls: false)      // the bottom row, the rest kept
+apple.print("SCORE 0", atX: 0, y: 0, cls: false)     // top left
+apple.print("Hello", uppercased: false)              // as given: the //e shows lower case
+apple.cls()                                          // all blank
+
+// disks and binaries
+apple.insert(diskURL)                                // drive 1, not booted
+apple.insert(diskURL, drive: 1)                      // drive 2
+apple.insert(diskURL, boot: true)                    // drive 1, power cycle and boot it
+apple.load(binaryURL)                                // at the name's address (GAME#064000.bin), else $0800
+apple.load(bytes, at: 0x0300, run: false)            // into memory only, nothing started
+
+// the keyboard
+apple.type("CATALOG\n")                              // key by key, as fast as the program takes them
+apple.press(0x1B)                                    // one key: Esc
+
+// the hardware underneath
+apple.machine.paddles[0] = 255                       // paddle 0 all the way
+apple.machine.ioHook = { address, write, value in    // your own soft switches
+    address == 0xC0F0 && !write ? 0x42 : nil         // nil: the Apple's own
+}
+```
+
+A view with a machine of its own, a game started on a blank screen:
+
+```swift
+struct ContentView: View {
+    var body: some View {
+        Apple2View(.apple2Plus, roms: .none) { apple in
+            apple.print("Loading...")
+            apple.insert(Bundle.main.url(forResource: "GAME", withExtension: "dsk")!)
+            apple.load(Bundle.main.url(forResource: "GAME", withExtension: "bin")!, at: 0x0DFB)
+        }
+    }
+}
+```
+
+`swift test` runs the tests (Applesoft, a binary loaded and run, the
+language card, a machine without ROMs, cards and the I/O hook, `print`;
+the ones that need ROMs are skipped without them, below).
 
 * [Docs](Docs/README.md): the machine, the Disk II, the code, status, next steps.
 * [Data](Data/README.md): a headless runner (~100× real time), disk
@@ -101,12 +187,12 @@ looked up in the app's bundle: put them in the app project's
 the bundle. Elsewhere:
 
 ```swift
-EmulatorModel(model: .apple2e, romDirectory: URL(fileURLWithPath: "/path/to/roms"))
-let machine = try ROMs.machine(.apple2e, from: romsURL)   // an Apple2 without the UI
+Apple2(model: .apple2e, roms: .directory(URL(fileURLWithPath: "/path/to/roms")))
+let machine = try ROMs.machine(.apple2e, roms: .directory(romsURL))   // the hardware, without the UI
 ```
 
 A ROM missing or of the wrong size is a programming error in
-`EmulatorModel` (`fatalError` with the file's name); `ROMs.machine` throws
+`Apple2` (`fatalError` with the file's name); `ROMs.machine` throws
 `ROMs.ROMError`. For `swift test` and `Data/headless.sh`, put the ROMs in
 `roms/` in this folder (git‑ignored) or set `APPLE2_ROMS` to their
 directory; the tests that need them are skipped without them.

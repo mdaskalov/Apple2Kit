@@ -4,7 +4,7 @@ import SwiftUI
 import UIKit
 
 struct ScreenRepresentable: UIViewRepresentable {
-    let emulator: EmulatorModel
+    let emulator: Apple2
     let style: Screen.Style
 
     func makeUIView(context: Context) -> ScreenUIView {
@@ -22,11 +22,11 @@ struct ScreenRepresentable: UIViewRepresentable {
 /// buttons), the on-screen keyboard's (`UIKeyInput`, a tap shows or hides
 /// it), the Siri Remote's on tvOS.
 final class ScreenUIView: UIView, UIKeyInput {
-    var emulator: EmulatorModel
+    var emulator: Apple2
     var style: Screen.Style
     private var link: CADisplayLink?
 
-    init(emulator: EmulatorModel, style: Screen.Style) {
+    init(emulator: Apple2, style: Screen.Style) {
         self.emulator = emulator
         self.style = style
         super.init(frame: .zero)

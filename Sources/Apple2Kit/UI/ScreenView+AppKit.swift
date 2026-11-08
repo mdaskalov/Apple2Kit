@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 struct ScreenRepresentable: NSViewRepresentable {
-    let emulator: EmulatorModel
+    let emulator: Apple2
     let style: Screen.Style
 
     func makeNSView(context: Context) -> ScreenNSView {
@@ -19,11 +19,11 @@ struct ScreenRepresentable: NSViewRepresentable {
 /// Runs the emulator with a display link, shows each frame's picture in its
 /// layer, and hands key presses and the ⌥ keys (push buttons) to it.
 final class ScreenNSView: NSView {
-    var emulator: EmulatorModel
+    var emulator: Apple2
     var style: Screen.Style
     private var link: CADisplayLink?
 
-    init(emulator: EmulatorModel, style: Screen.Style) {
+    init(emulator: Apple2, style: Screen.Style) {
         self.emulator = emulator
         self.style = style
         super.init(frame: .zero)

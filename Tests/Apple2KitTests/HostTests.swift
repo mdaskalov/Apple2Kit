@@ -5,8 +5,8 @@ import Testing
 /// the I/O hook and copies: no ROM files needed (a ROM of $EA bytes stands in
 /// where one is).
 @Suite struct HostTests {
-    private func plus() -> Apple2 {
-        Apple2(model: .apple2Plus, rom: [UInt8](repeating: 0xEA, count: 0x3000), diskROM: nil)
+    private func plus() -> Apple2Machine {
+        Apple2Machine(model: .apple2Plus, rom: [UInt8](repeating: 0xEA, count: 0x3000), diskROM: nil)
     }
 
     @Test func languageCardInFlatMemory() {
@@ -35,7 +35,7 @@ import Testing
     }
 
     @Test func withoutROMsTheCardIsRAM() {
-        let m = Apple2(model: .apple2e, rom: nil, diskROM: nil)
+        let m = Apple2Machine(model: .apple2e, rom: nil, diskROM: nil)
         var card = [UInt8](repeating: 0, count: 0x4000)
         card[0] = 0x11; card[0x1000] = 0x22; card[0x3FFF] = 0x33
         var main = [UInt8](repeating: 0, count: 0x10000)
@@ -60,7 +60,7 @@ import Testing
     }
 
     @Test func cardsAndTheHook() {
-        let m = Apple2(model: .apple2e, rom: nil, diskROM: nil)
+        let m = Apple2Machine(model: .apple2e, rom: nil, diskROM: nil)
         let card = Card()
         m.insert(card, slot: 4)
         #expect(m.cpu.read(0xC40C) == 0x0C ^ 0x5A && m.cpu.mem[0xC4FB] == 0xFB ^ 0x5A)
@@ -77,6 +77,27 @@ import Testing
         m.clicks = []
         _ = m.cpu.read(0xC030)                              // the machine's: a click
         #expect(m.takeClicks().count == 1 && seen.count == 2)
+    }
+
+    @Test func printOnABlankScreen() {
+        let m = Apple2Machine(model: .apple2Plus, rom: nil, diskROM: nil)
+        var rows = m.screenText().split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(rows.count == 24 && rows.allSatisfy { $0 == String(repeating: " ", count: 40) })   // no ROM: blank
+        m.print("Loading...")
+        rows = m.screenText().split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(rows[12] == String(repeating: " ", count: 15) + "LOADING..." + String(repeating: " ", count: 15))
+        m.print("ABCD", atX: 38, y: 0, cls: false)                      // cut off at the row's end
+        m.print("é" + String(repeating: "X", count: 50), y: 23, cls: false)     // too long, not ASCII
+        m.print("off the screen", y: 24, cls: false)
+        rows = m.screenText().split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(rows[0].hasSuffix(" AB") && rows[1] == String(repeating: " ", count: 40))
+        #expect(rows[23] == String(repeating: "X", count: 40) && rows[12].contains("LOADING"))
+        #expect(m.cpu.mem.count == 0x10000)
+        m.print("lower", atX: 0, y: 0, uppercased: false)
+        #expect(m.cpu.mem[0x400] == 0xEC)                               // as given: "l"
+        let e = Apple2Machine(model: .apple2e, rom: nil, diskROM: nil)
+        e.print("Hi", atX: 0, y: 0)
+        #expect(e.screenText().hasPrefix("Hi "))                        // the //e: lower case
     }
 
     @Test func copiesAreIndependent() {

@@ -2,7 +2,7 @@
 /// card's 16 switches ($C0n0-$C0nF, n = slot + 8) move the head, switch the
 /// motor, pick a drive and read or write the disk's nibbles through the data
 /// latch.  The boot ROM (P5, 256 bytes at $Cn00) is the machine's to map
-/// (`Apple2`).
+/// (`Apple2Machine`).
 ///
 /// Timing, simplified (Docs/DiskII.md): a nibble reads with bit 7 set once,
 /// then, read again within 32 cycles, without (the latch shifting); the next
@@ -67,7 +67,7 @@ public nonisolated final class DiskII {
     }
 
     /// An independent controller in the same state, with copies of the
-    /// drives and their disks (`Apple2.copy`).
+    /// drives and their disks (`Apple2Machine.copy`).
     func copy() -> DiskII {
         let c = DiskII()
         for (mine, theirs) in zip(drives, c.drives) {

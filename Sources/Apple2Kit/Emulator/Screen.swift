@@ -306,9 +306,9 @@ public nonisolated enum Screen {
     }
 }
 
-nonisolated extension Apple2 {
+nonisolated extension Apple2Machine {
     /// Characters flash about twice a second (every 16 frames).
-    var flashOn: Bool { cpu.cycles / UInt64(Apple2.cyclesPerFrame * 16) & 1 != 0 }
+    var flashOn: Bool { cpu.cycles / UInt64(Apple2Machine.cyclesPerFrame * 16) & 1 != 0 }
 
     /// The display now, 560 × 192 RGBA.
     func screenPixels(style: Screen.Style) -> [UInt32] {

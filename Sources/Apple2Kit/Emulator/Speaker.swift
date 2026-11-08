@@ -13,7 +13,7 @@ public nonisolated struct SpeakerRenderer {
     public static let settle = sampleRate / 20
     public static let volume = 0.4
     /// CPU cycles per sample.
-    public static let perSample = Apple2.clock / Double(sampleRate)
+    public static let perSample = Apple2Machine.clock / Double(sampleRate)
     private static let pole = 0.995
 
     /// The cone's side (-1 or 1), and the high pass's last input and output.
@@ -64,7 +64,7 @@ public nonisolated struct SpeakerRenderer {
 public nonisolated struct SpeakerStream {
     /// The silence after a click that is still part of a stretch: a tune's
     /// pauses keep their length.
-    public static let hold = Apple2.clock / 4
+    public static let hold = Apple2Machine.clock / 4
     /// The least a stretch starts with, silence ahead of its first samples:
     /// a frame may come late by that much before the sound breaks up.
     public static let lead = SpeakerRenderer.sampleRate / 25

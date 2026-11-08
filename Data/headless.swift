@@ -34,7 +34,7 @@ struct Headless {
         var args = Array(CommandLine.arguments.dropFirst())
         guard !args.isEmpty else { print(usage); exit(2) }
         var romDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["APPLE2_ROMS"] ?? "../roms")
-        var model = Apple2.Model.apple2Plus
+        var model = Apple2Machine.Model.apple2Plus
         while let first = args.first, first == "--roms" || first == "--model" {
             args.removeFirst()
             let value = args.isEmpty ? "" : args.removeFirst()
@@ -43,16 +43,16 @@ struct Headless {
             else if value == "e" { model = .apple2e }
             else if value != "plus" { fail("--model plus|ii|e") }
         }
-        let machine: Apple2
-        do { machine = try ROMs.machine(model, from: romDir) } catch { fail("\(error.localizedDescription)") }
+        let machine: Apple2Machine
+        do { machine = try ROMs.machine(model, roms: .directory(romDir)) } catch { fail("\(error.localizedDescription)") }
         machine.clicks = []
         var style = Screen.Style.color
         var speaker = SpeakerStream()
         let start = Date()
         var emulated = 0.0
         func run(_ seconds: Double, until done: () -> Bool = { false }) {
-            let slice = Apple2.cyclesPerFrame
-            var left = Int(seconds * Apple2.clock)
+            let slice = Apple2Machine.cyclesPerFrame
+            var left = Int(seconds * Apple2Machine.clock)
             while left > 0, !done() {
                 do { try machine.run(cycles: min(slice, left)) } catch {
                     print("CPU stopped: \(error) at $\(hex(machine.cpu.pc, 4))")
@@ -60,7 +60,7 @@ struct Headless {
                     exit(1)
                 }
                 left -= slice
-                emulated += Double(slice) / Apple2.clock
+                emulated += Double(slice) / Apple2Machine.clock
             }
         }
         func disk(_ path: String) -> DiskImage {
@@ -146,14 +146,14 @@ struct Headless {
         print(String(format: "%.1f s emulated in %.2f s (%.0f×)", emulated, wall, emulated / max(wall, 0.001)))
     }
 
-    static func printScreen(_ m: Apple2) {
+    static func printScreen(_ m: Apple2Machine) {
         let line = "+" + String(repeating: "-", count: 40) + "+"
         print(line)
         for row in m.screenText().split(separator: "\n", omittingEmptySubsequences: false) { print("|\(row)|") }
         print(line)
     }
 
-    static func printStatus(_ m: Apple2) {
+    static func printStatus(_ m: Apple2Machine) {
         let c = m.cpu, v = m.video
         print("PC=\(hex(c.pc, 4)) A=\(hex(c.a)) X=\(hex(c.x)) Y=\(hex(c.y)) SP=\(hex(c.sp)) P=\(hex(c.p)) cycles=\(c.cycles)")
         print("video: \(v.text ? "text" : v.hires ? "hires" : "lores")\(v.mixed ? " mixed" : "") page \(v.page2 ? 2 : 1); \(m.languageCardState); speaker clicks \(m.speakerClicks)")
@@ -162,7 +162,7 @@ struct Headless {
         }
     }
 
-    static func writePNG(_ m: Apple2, style: Screen.Style, to path: String) {
+    static func writePNG(_ m: Apple2Machine, style: Screen.Style, to path: String) {
         guard let image = m.screenImage(style: style, rowsTwice: true),
               let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil)
         else { fail("can't write \(path)") }

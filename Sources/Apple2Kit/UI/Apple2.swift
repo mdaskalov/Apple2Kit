@@ -7,12 +7,24 @@ import QuartzCore
 #endif
 import UniformTypeIdentifiers
 
-/// The emulator as an app runs it: the machine, run with the display's
-/// frames at the Apple's speed (faster while a disk turns, `fastDisk`), its
-/// speaker, the disks in and out, binaries loaded into memory, the keyboard,
-/// and a status of it all.  Show it with `Apple2View`, which runs it.
+/// An Apple ][, ][+ or //e as an app runs it: the hardware (`machine`) run
+/// with the display's frames at the Apple's speed (faster while a disk
+/// turns, `fastDisk`), its speaker, the disks in and out, binaries loaded
+/// into memory, text on the screen, the keyboard, and a status of it all.
+/// Show it with `Apple2View`, which runs it:
+///
+///     @State private var apple = Apple2(model: .apple2Plus)
+///     …
+///     Apple2View(apple).task {
+///         apple.print("Hi!")
+///         apple.load(file, at: 0x1100)
+///     }
 @Observable
-public final class EmulatorModel {
+public final class Apple2 {
+    public typealias Model = Apple2Machine.Model
+    /// CPU cycles a second (`Apple2Machine.clock`).
+    public static let clock = Apple2Machine.clock
+
     /// What a status bar shows of a drive.
     public struct DriveStatus: Equatable, Sendable {
         public var name: String?
@@ -22,9 +34,11 @@ public final class EmulatorModel {
         public var format = ""
     }
 
-    public private(set) var machine: Apple2
+    /// The hardware: CPU, memory, switches, drives, cards (`Apple2Machine`).
+    /// Another `model` puts in a new one.
+    public private(set) var machine: Apple2Machine
     /// The machine; another one restarts with the same disks.
-    public var model: Apple2.Model {
+    public var model: Model {
         didSet { if model != oldValue { switchModel() } }
     }
     /// The speaker plays (else it is muted).  Either way what is queued goes:
@@ -55,18 +69,18 @@ public final class EmulatorModel {
     /// The disk image files it takes.
     public static let diskTypes = ["dsk", "do", "po", "nib"].compactMap { UTType(filenameExtension: $0) }
 
-    /// Where the ROMs are (`ROMs`): nil, the app's bundle (`roms/` in its
-    /// resources, or the resources themselves).
-    public let romDirectory: URL?
+    /// Where the ROMs come from (`ROMs.Source`).
+    public let roms: ROMs.Source
 
     /// A machine of `model`, powered on: the ][+ starts Applesoft (there is
-    /// no disk yet).  The ROMs come from `romDirectory`, nil: the app's
-    /// bundle; one missing is a programming error (`fatalError`).
-    public init(model: Apple2.Model = .apple2Plus, romDirectory: URL? = nil) {
+    /// no disk yet).  The ROMs come from `roms`: the app's bundle, a folder,
+    /// or none – a blank screen, for a program the app loads (`load`).  One
+    /// missing is a programming error (`fatalError`).
+    public init(model: Model = .apple2Plus, roms: ROMs.Source = .bundle) {
         self.model = model
-        self.romDirectory = romDirectory
+        self.roms = roms
         do {
-            machine = try ROMs.machine(model, from: romDirectory)
+            machine = try ROMs.machine(model, roms: roms)
             machine.clicks = []
         } catch {
             fatalError("\(error.localizedDescription)")
@@ -106,7 +120,7 @@ public final class EmulatorModel {
         let deadline = mediaTime() + 0.012
         while !paused, machine.disk.motorOn(at: machine.cpu.cycles), mediaTime() < deadline {
             if sound, machine.clicks?.isEmpty == false { return }
-            run(Apple2.cyclesPerFrame)
+            run(Apple2Machine.cyclesPerFrame)
         }
         if !sound { _ = machine.takeClicks() }
     }
@@ -190,7 +204,7 @@ public final class EmulatorModel {
     /// Another model: a new machine with the same disks, powered on.
     private func switchModel() {
         do {
-            let new = try ROMs.machine(model, from: romDirectory)
+            let new = try ROMs.machine(model, roms: roms)
             new.clicks = []
             for i in 0 ..< 2 {
                 if let image = machine.disk.eject(drive: i) { new.disk.insert(image, drive: i) }
@@ -222,11 +236,25 @@ public final class EmulatorModel {
     /// The text screen as 24 lines of 40 characters.
     public var screenText: String { machine.screenText() }
 
+    // MARK: text on the screen
+
+    /// Fills text page 1 with spaces.
+    public func cls() {
+        machine.cls()
+    }
+
+    /// Writes `text` on text page 1, row `y` from column `x` (nil: centred);
+    /// see `Apple2Machine.print`.  With ROMs, `load` on a machine that hasn't
+    /// run yet starts it up, which clears the screen: print after it.
+    public func print(_ text: String, atX x: Int? = nil, y: Int = 12, uppercased: Bool? = nil, cls: Bool = true) {
+        machine.print(text, atX: x, y: y, uppercased: uppercased, cls: cls)
+    }
+
     // MARK: disks
 
     /// Puts the image at `url` in drive `drive` (0 or 1); `boot`: and power
     /// cycles to boot it.
-    public func insert(_ url: URL, drive: Int, boot: Bool) {
+    public func insert(_ url: URL, drive: Int = 0, boot: Bool = false) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -239,7 +267,7 @@ public final class EmulatorModel {
 
     /// Puts `image` in drive `drive` (0 or 1); `boot`: and power cycles to
     /// boot it.
-    public func insert(_ image: DiskImage, drive: Int, boot: Bool) {
+    public func insert(_ image: DiskImage, drive: Int = 0, boot: Bool = false) {
         machine.disk.insert(image, drive: drive)
         if boot { restart() }
         refreshStatus(at: mediaTime())
@@ -285,10 +313,11 @@ public final class EmulatorModel {
     ///
     /// A machine that hasn't run yet first runs the ROM's start-up for half a
     /// second (without booting a disk): it sets up the screen and the I/O
-    /// hooks a program may call (COUT…).
+    /// hooks a program may call (COUT…).  Without ROMs there is none: memory
+    /// stays as it is (text `print`ed before shows).
     public func load(_ bytes: [UInt8], at address: UInt16, run: Bool = true) {
         let startUp = Int(Apple2.clock / 2)
-        if machine.cpu.cycles < UInt64(startUp) {
+        if machine.hasROM, machine.cpu.cycles < UInt64(startUp) {
             machine.startBASIC()
             try? machine.run(cycles: startUp)
         }

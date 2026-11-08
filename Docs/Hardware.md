@@ -1,7 +1,7 @@
 # The machine as emulated
 
 An Apple ][ or ][+ with 48K of RAM, a 16K language card in slot 0 and a
-Disk II controller in slot 6. Code: `Sources/Apple2Kit/Emulator/Apple2.swift`.
+Disk II controller in slot 6. Code: `Sources/Apple2Kit/Emulator/Apple2Machine.swift`.
 
 ## Memory map
 
@@ -17,13 +17,14 @@ Disk II controller in slot 6. Code: `Sources/Apple2Kit/Emulator/Apple2.swift`.
 
 The `MOS6502` CPU has a flat 64K `mem`. Every page from $C0 up is one of its
 *I/O pages* (`cpu.ioPages`): reads and writes there go through
-`Apple2.read`/`write`, which picks the switch, the ROM or the language card's
+`Apple2Machine.read`/`write`, which picks the switch, the ROM or the language card's
 RAM – but while the language card's RAM is read and written, it lies in
 `mem` itself (the selected $D000 bank and $E000‑$FFFF, `mapLanguageCard`;
 a bank switch swaps $D000‑$DFFF) and $D0‑$FF are no I/O pages: code in the
 card's RAM runs as fast as below $C000, and a host reads it in place.
-Without ROMs (`Apple2(model:, rom: nil, diskROM: nil)`, a host's machine)
-it always is.  A host's own switches go first (`ioHook`). Below $C000 nothing is in the way: the hot path (zero page, stack,
+Without ROMs (`Apple2Machine(model:, rom: nil, diskROM: nil)`, `ROMs.Source.none`, a host's machine)
+it always is, and power‑on fills the text page with spaces ($A0), not
+zeros (inverse `@`).  A host's own switches go first (`ioHook`). Below $C000 nothing is in the way: the hot path (zero page, stack,
 program code in RAM) is a plain array access. Code running in ROM (BASIC,
 the monitor) goes through a closure on every fetch. That is fast enough
 (about 100× real time in a release build).
@@ -34,7 +35,9 @@ memory. A 128K //e would need more (Emulator.md).
 
 ## ROMs
 
-Not part of the package: the app provides them (`ROMs`, README.md).
+Not part of the package: the app provides them (`ROMs`, README.md), or
+runs a program that needs none without them (`roms: .none`: nothing
+boots, the CPU's vectors are RAM, the app loads the program and starts it).
 
 | File | Size | Contents |
 |---|---|---|
@@ -101,7 +104,7 @@ and power‑on: read ROM, write RAM, bank 2.
 
 ## Keyboard
 
-`Apple2.press(ascii)` puts the key in the latch with bit 7 set; reading
+`Apple2Machine.press(ascii)` puts the key in the latch with bit 7 set; reading
 $C010 clears it. `KeyMap` maps the Mac's keys (and a hardware keyboard's on
 iOS, tvOS, visionOS: the same) to ASCII:
 
@@ -118,7 +121,7 @@ iOS, tvOS, visionOS: the same) to ASCII:
 Characters come from the Mac's layout (`event.characters`), so `[ ] @ \ |`
 typed with ⌥ (German layout) arrive as themselves. ⌘ keys go to the menus.
 
-`Apple2.type(text)` (*Paste as Keys*) queues keys. Each one goes in when the
+`Apple2Machine.type(text)` (*Paste as Keys*) queues keys. Each one goes in when the
 latch is clear and 2000 cycles have passed since the code cleared it.
 
 ## The display
@@ -202,7 +205,7 @@ There are no NTSC artefacts beyond that.
 ## The speaker
 
 Each access to $C030 flips the speaker's cone. The machine records the
-CPU cycle of each click (`Apple2.clicks`, when not nil). `EmulatorModel` takes
+CPU cycle of each click (`Apple2Machine.clicks`, when not nil). `Apple2` takes
 them each frame (`takeClicks`) and renders them to the cycle
 (`Emulator/Speaker.swift`, `SpeakerRenderer`):
 

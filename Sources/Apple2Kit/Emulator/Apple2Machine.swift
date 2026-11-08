@@ -16,8 +16,13 @@ import MOS6502
 /// Without ROMs (`init` with nil) the machine is a host's: the language
 /// card's RAM is always read and written ($C080-$C08F pick the bank only),
 /// the slots' ROM pages are empty but the cards' (`insert`), nothing
-/// boots – the host loads memory (`load`) and sets the CPU going.
-public nonisolated final class Apple2 {
+/// boots – the host loads memory (`load`) and sets the CPU going.  The
+/// text page starts blank (spaces), not as zeros (inverse `@`).
+///
+/// This is the hardware alone, without a clock, sound or UI (headless:
+/// `Data/headless.sh`).  An app holds an `Apple2`, which runs one of these
+/// in real time (`Apple2.machine`).
+public nonisolated final class Apple2Machine {
     public enum Model: String, CaseIterable, Identifiable, Sendable {
         /// Integer BASIC and the original monitor: no autostart, RESET goes
         /// to the monitor (`*`); boot a disk with `C600G` or `6` Ctrl-P.
@@ -117,6 +122,7 @@ public nonisolated final class Apple2 {
     public func powerOn() {
         unmapLanguageCard()
         cpu.mem.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        if rom == nil { cls() }                 // no ROM clears the screen
         languageCard = LanguageCard(ramOnly: rom == nil)
         mapLanguageCard()
         for slot in 1 ... 7 where cards[slot] != nil { putROMPage(slot) }
@@ -208,7 +214,7 @@ public nonisolated final class Apple2 {
         if isIIe, let byte = internalROM(a) { return byte }
         let slot = Int(a >> 8) - 0xC0
         if slot < 8, cards[slot] != nil { return cpu.mem[Int(a)] }     // its ROM page (`insert`)
-        if slot == Apple2.diskSlot, disk.hasDisk, !diskROMHidden, let diskROM { return diskROM[Int(a & 0xFF)] }
+        if slot == Apple2Machine.diskSlot, disk.hasDisk, !diskROMHidden, let diskROM { return diskROM[Int(a & 0xFF)] }
         return 0                                // empty slots, no $C800 ROM
     }
 
@@ -283,7 +289,7 @@ public nonisolated final class Apple2 {
         case 0x6: on = iie.altZP
         case 0x7: on = iie.slotC3ROM
         case 0x8: on = iie.store80
-        case 0x9: on = cpu.cycles % UInt64(Apple2.cyclesPerFrame) < 192 * 65    // not in the vertical blank
+        case 0x9: on = cpu.cycles % UInt64(Apple2Machine.cyclesPerFrame) < 192 * 65    // not in the vertical blank
         case 0xA: on = video.text
         case 0xB: on = video.mixed
         case 0xC: on = video.page2
@@ -326,7 +332,7 @@ public nonisolated final class Apple2 {
         case 0x8:
             languageCard.access(low, write: write)
             mapLanguageCard()
-        case 0x8 + Apple2.diskSlot:
+        case 0x8 + Apple2Machine.diskSlot:
             return disk.access(low & 0xF, write: write, value: value, cycles: cpu.cycles)
         case 0x9 ... 0xF:
             return cards[(low >> 4) - 8]?.access(low & 0xF, write: write, value: value, cycles: cpu.cycles) ?? 0
@@ -362,6 +368,9 @@ public nonisolated final class Apple2 {
 
     var languageCardState: String { languageCard.description }
 
+    /// It has its model's ROM (else it's a host's machine, see above).
+    public var hasROM: Bool { rom != nil }
+
     // MARK: the host's
 
     /// Puts `memory` in main RAM ($0000-$BFFF; a 64K image's rest is left
@@ -379,7 +388,7 @@ public nonisolated final class Apple2 {
     /// there out (nil): its ROM page is read at $Cn00-$CnFF, its switches
     /// are $C080 + slot × 16 on.
     public func insert(_ card: Apple2Card?, slot: Int) {
-        precondition((1 ... 7).contains(slot) && slot != Apple2.diskSlot, "slots 1-7 but the Disk II's")
+        precondition((1 ... 7).contains(slot) && slot != Apple2Machine.diskSlot, "slots 1-7 but the Disk II's")
         cards[slot] = card
         putROMPage(slot)
     }
@@ -398,8 +407,8 @@ public nonisolated final class Apple2 {
     /// devices, the drives and their disks, the CPU's registers and cycles.
     /// The cards are the same (a card keeps its own state); the host's
     /// `ioHook` and the CPU's traps and watches aren't copied.
-    public func copy() -> Apple2 {
-        let c = Apple2(model: model, rom: rom, diskROM: diskROM)
+    public func copy() -> Apple2Machine {
+        let c = Apple2Machine(model: model, rom: rom, diskROM: diskROM)
         c.cpu.mem = cpu.mem
         c.cpu.ioPages = cpu.ioPages
         (c.cpu.a, c.cpu.x, c.cpu.y, c.cpu.sp, c.cpu.p, c.cpu.pc, c.cpu.cycles) = (cpu.a, cpu.x, cpu.y, cpu.sp, cpu.p, cpu.pc, cpu.cycles)
@@ -456,9 +465,35 @@ public nonisolated final class Apple2 {
         for page in 0xD0 ... 0xFF { cpu.ioPages[page] = true }
         mappedBank2 = nil
     }
+
+    // MARK: text on the screen
+
+    /// Fills text page 1 ($0400-$07FF) with spaces.
+    public func cls() {
+        cpu.mem.replaceSubrange(0x400 ..< 0x800, with: repeatElement(0xA0, count: 0x400))
+    }
+
+    /// Writes `text` on text page 1, row `y` (0-23) from column `x` (nil:
+    /// centred), cut off at the row's ends; a character past ASCII (or a
+    /// control character) as `?`.  `uppercased` nil: on the ][ and ][+,
+    /// which have no lower case.  `cls`: the screen cleared first.  It shows
+    /// while the screen is in text mode (as at power-on).
+    public func print(_ text: String, atX x: Int? = nil, y: Int = 12, uppercased: Bool? = nil, cls: Bool = true) {
+        if cls { self.cls() }
+        guard (0 ..< 24).contains(y) else { return }
+        let text = (uppercased ?? !isIIe) ? text.uppercased() : text
+        var bytes = text.unicodeScalars.map { $0.isASCII && $0.value >= 0x20 ? UInt8($0.value) | 0x80 : 0xBF }
+        let x = x ?? (40 - bytes.count) / 2
+        if x < 0 { bytes.removeFirst(min(-x, bytes.count)) }
+        let column = max(x, 0)
+        let count = min(bytes.count, 40 - column)
+        guard count > 0 else { return }
+        let address = Screen.textAddress(row: y, page2: false) + column
+        cpu.mem.replaceSubrange(address ..< address + count, with: bytes.prefix(count))
+    }
 }
 
-/// A card in a slot of an `Apple2` (`insert`): its ROM page at $Cn00-$CnFF
+/// A card in a slot of an `Apple2Machine` (`insert`): its ROM page at $Cn00-$CnFF
 /// and its 16 switches at $C080 + slot × 16 ($C0n0-$C0nF, n = slot + 8).  A
 /// host can run the card's firmware as its own code where the CPU gets there
 /// (the CPU's traps).

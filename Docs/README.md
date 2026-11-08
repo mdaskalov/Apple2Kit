@@ -16,7 +16,7 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
 | [../Data/README.md](../Data/README.md) | the scripts: headless runner, disk catalog/extract/list, disassembler, hex dump, hi‑res to PNG, the font |
 | [charset.png](charset.png) | the text font (`Charset.swift`) |
 
-## Status (2026‑11‑06)
+## Status (2026‑11‑08)
 
 * **Machines:** Apple ][+ (Applesoft, autostart ROM) and Apple ][ (Integer
   BASIC, original monitor), 48K + 16K language card, NMOS 6502 at
@@ -30,6 +30,12 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   extract` writes it) into memory and, as `BRUN` does, jumps to it; RTS
   returns to the monitor. The address comes from the call, or from the
   file's name (`NAME#06XXXX.bin`).
+* **Without ROMs** (`roms: .none`): for a program that needs none (its own
+  code, its own disk routines). The screen starts blank, `print` puts text
+  on it (a "Loading..."), `load` runs the program at once.
+* **Two types:** `Apple2` (the app's: real time, sound, disks, status;
+  `@Observable`) runs an `Apple2Machine` (the hardware alone, also
+  headless). Emulator.md, *Apple2 and Apple2Machine*.
 * **Display:** 40×24 text in the Apple's font (inverse, flashing; ][+ has no
   lower case), hi‑res in three styles (Color, Color Filled, Mono), lo‑res,
   mixed mode, pages 1 and 2. Each frame is drawn from memory as it is at

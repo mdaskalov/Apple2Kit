@@ -19,13 +19,13 @@ private func hasROMs(_ models: [Apple2.Model] = Apple2.Model.allCases) -> Bool {
 
 /// Runs the machine `seconds` of its time, without a display.
 @MainActor
-private func run(_ emulator: EmulatorModel, _ seconds: Double) throws {
+private func run(_ emulator: Apple2, _ seconds: Double) throws {
     try emulator.machine.run(cycles: Int(seconds * Apple2.clock))
 }
 
 @MainActor
 @Test(.enabled(if: hasROMs([.apple2Plus]), "no ROMs")) func applesoftPrints() throws {
-    let emulator = EmulatorModel(romDirectory: romDirectory)
+    let emulator = Apple2(roms: .directory(romDirectory))
     try run(emulator, 1)
     emulator.type("PRINT 2+2\n")
     try run(emulator, 1)
@@ -38,7 +38,7 @@ private let printHI: [UInt8] = [0xA9, 0xC8, 0x20, 0xED, 0xFD, 0xA9, 0xC9, 0x20, 
 @MainActor
 @Test(.enabled(if: hasROMs(), "no ROMs"), arguments: Apple2.Model.allCases)
 func loadAndRunBinary(model: Apple2.Model) throws {
-    let emulator = EmulatorModel(model: model, romDirectory: romDirectory)
+    let emulator = Apple2(model: model, roms: .directory(romDirectory))
     emulator.load(printHI, at: 0x0300)
     #expect(emulator.machine.cpu.pc == 0x0300)
     #expect(emulator.machine.peek(0x0300) == 0xA9)
@@ -51,7 +51,7 @@ func loadAndRunBinary(model: Apple2.Model) throws {
 
 @MainActor
 @Test(.enabled(if: hasROMs([.apple2e]), "no ROMs")) func iieLowerCase() throws {
-    let emulator = EmulatorModel(model: .apple2e, romDirectory: romDirectory)
+    let emulator = Apple2(model: .apple2e, roms: .directory(romDirectory))
     try run(emulator, 1)
     #expect(emulator.screenText.contains("Apple ]["))
     emulator.type("print 6*7\n")
@@ -60,6 +60,6 @@ func loadAndRunBinary(model: Apple2.Model) throws {
 }
 
 @Test func loadAddressFromName() {
-    #expect(EmulatorModel.loadAddress(in: "GAME#064000.bin") == 0x4000)
-    #expect(EmulatorModel.loadAddress(in: "GAME.bin") == nil)
+    #expect(Apple2.loadAddress(in: "GAME#064000.bin") == 0x4000)
+    #expect(Apple2.loadAddress(in: "GAME.bin") == nil)
 }
