@@ -48,6 +48,11 @@ public final class Apple2 {
     }
     /// Run as fast as it goes while a disk drive's motor is on.
     public var fastDisk = true
+    /// A mouse card in slot 4 (`Apple2Machine.mouseEnabled`); kept when
+    /// the model changes.
+    public var mouse = false {
+        didSet { machine.mouseEnabled = mouse }
+    }
     public private(set) var paused = false
     /// Why the machine stopped, or a file that couldn't be opened.
     public var message: String?
@@ -58,6 +63,8 @@ public final class Apple2 {
     /// MHz, measured.
     public private(set) var speed = 0.0
     public private(set) var videoMode = ""
+    /// The game controller playing as the joystick (`GameControllers`); nil: none.
+    public private(set) var controllerName: String?
 
     @ObservationIgnored private var lastFrame: CFTimeInterval?
     /// Cycles owed to the clock, fractions included.
@@ -94,6 +101,8 @@ public final class Apple2 {
     /// second is caught up; with `fastDisk` it may run on ahead (`runAhead`).
     func frame(at time: CFTimeInterval, style: Screen.Style) -> CGImage? {
         defer { lastFrame = time }
+        let controller = machine.readGameController(playing: !paused)
+        if controller != controllerName { controllerName = controller }
         if !paused, let last = lastFrame {
             owed += min(max(time - last, 0), 0.1) * Apple2.clock
             let start = machine.cpu.cycles
@@ -206,6 +215,7 @@ public final class Apple2 {
         do {
             let new = try ROMs.machine(model, roms: roms)
             new.clicks = []
+            new.mouseEnabled = mouse
             for i in 0 ..< 2 {
                 if let image = machine.disk.eject(drive: i) { new.disk.insert(image, drive: i) }
             }
@@ -218,14 +228,30 @@ public final class Apple2 {
 
     // MARK: keyboard and buttons
 
-    /// A key pressed: its ASCII code (0-127).
+    /// A key typed: its ASCII code (0-127), as a key pressed and let go
+    /// at once (the on-screen keyboard's).
     public func press(_ ascii: UInt8) {
         machine.press(ascii)
     }
 
+    /// Key `id` (the host's number for it) down, typing `ascii` (0-127),
+    /// until `keyUp`: it repeats on the //e (`Keyboard`).
+    public func keyDown(_ ascii: UInt8, id: Int) {
+        machine.keyDown(ascii, id: id)
+    }
+
+    public func keyUp(id: Int) {
+        machine.keyUp(id: id)
+    }
+
+    /// Every key up: the view lost the keyboard.
+    public func releaseKeys() {
+        machine.releaseKeys()
+    }
+
     /// Push button `n` (0-2) down or up.
     public func setButton(_ n: Int, pressed: Bool) {
-        machine.buttons[n] = pressed
+        machine.gamePort.buttons[n] = pressed
     }
 
     /// Types `text` key by key, as fast as the program takes them.

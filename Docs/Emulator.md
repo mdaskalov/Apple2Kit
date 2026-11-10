@@ -4,7 +4,10 @@
 Package.swift           the library Apple2Kit (macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1), on MOS6502 (git, from 1.0.0)
 Sources/Apple2Kit/
   Emulator/             the emulator core: no AppKit/SwiftUI, also built by Data/headless.sh
-    Apple2Machine.swift the machine: memory map, soft switches, language card, keyboard, run
+    Apple2Machine.swift the machine: memory map, soft switches, language card, run, step (the IRQ line)
+    Keyboard.swift      the keyboard latch, keys held, the //e's any-key-down and auto-repeat
+    GamePort.swift      the paddle timers, push buttons and joystick
+    MouseCard.swift     the AppleMouse II in slot 4: ROM page, firmware routines, interrupts
     DiskII.swift        the Disk II controller and drives (switches, stepper, latch, timing)
     DiskImage.swift     image files ⇄ nibble tracks: 6-and-2, sector orders, writing back
     Screen.swift        the display from memory: text, lo-res, hi-res (3 styles), mixed → 560 × 192 RGBA;
@@ -19,9 +22,11 @@ Sources/Apple2Kit/
     ScreenView+AppKit.swift  macOS: the NSView: display link, frames, key events
     ScreenView+UIKit.swift   iOS, tvOS, visionOS: the UIView: display link, frames, keys, on-screen keyboard
     KeyMap.swift        the host's keys (NSEvent, UIKey, the Siri Remote) → Apple keys
+    GameControllers.swift  a game controller (GameController framework) as the joystick
     SoundPlayer.swift   the samples on an AVAudioPlayerNode
 Tests/Apple2KitTests/  swift test: Applesoft, a binary loaded and run, the #06 name (EmulatorTests, with ROMs);
-                        the language card, no ROMs, cards, the hook, copies, print (HostTests, without)
+                        the language card, no ROMs, cards, the hook, copies, print (HostTests, without);
+                        the keyboard's repeat, the paddle timers, the mouse card and its interrupt (InputTests)
 Data/                   scripts (Data/README.md)
 Docs/                   these notes
 roms/                   the ROMs for the tests and the headless runner (git-ignored, not published)
@@ -134,16 +139,20 @@ the message.
 
 ## Inputs, disks and binaries
 
-* Keys: `ScreenNSView.keyDown` → `KeyMap.ascii` → `Apple2Machine.press`. The view
+* Keys: `ScreenNSView.keyDown`/`keyUp` → `KeyMap.ascii` → `Apple2Machine.keyDown`/`keyUp`
+  by key code, the Mac's repeats left out (the //e repeats itself); losing
+  the focus lets every key go. The view
   takes the focus when it appears or is clicked. `ScreenUIView`:
-  `pressesBegan` (a hardware keyboard, the Siri Remote) the same way,
+  `pressesBegan`/`pressesEnded` (a hardware keyboard, the Siri Remote) the same way,
   taking only the presses that are Apple keys (⌘ shortcuts go on); the
   on‑screen keyboard through `UIKeyInput` (`insertText` → `type`,
   `deleteBackward` → ←) and a key bar (`inputAccessoryView`: esc, ctrl for
   the next key, arrows). It takes the focus at once when a hardware keyboard
   is there (`GCKeyboard.coalesced`), else on a tap.
 * ⌥ left/right (`flagsChanged`, device bits $20/$40; UIKit: the alt keys'
-  presses) → `Apple2Machine.buttons[0/1]`.
+  presses) → `Apple2Machine.gamePort.buttons[0/1]`.
+* A game controller → the joystick, every frame (`readGameController`,
+  Hardware.md "Game port").
 * Disks: `insert(url or DiskImage, drive:, boot:)` (a security‑scoped URL is
   opened for the read); `diskFileData(drive:)` gives the image back with
   what was written, for the app to save. The app owns the panels and drops.
@@ -207,10 +216,6 @@ cd Data
 ```
 
 ## Adding things
-
-**Joystick.** `Apple2Machine.paddles[0...3]` (0‑255) and `buttons`. Map a game
-controller (GameController framework)
-or the mouse/arrow keys to them.
 
 **128K //e, 80 columns.** The //e runs with 64K (Hardware.md, *The //e*).
 For 80 columns (`PR#3`) and 128K software it needs aux memory (RAMRD,

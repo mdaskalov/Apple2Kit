@@ -3,6 +3,61 @@ import GameController
 import SwiftUI
 import UIKit
 
+#if os(tvOS)
+/// On tvOS the screen is the view of a `GCEventViewController`, so that a
+/// gamepad plays only as the joystick: its d-pad, A and B (Menu) would
+/// otherwise come to UIKit as well, as the arrows, return and leaving the
+/// app.  The Siri Remote goes on being the keys while it is the controller
+/// in use.
+struct ScreenRepresentable: UIViewControllerRepresentable {
+    let emulator: Apple2
+    let style: Screen.Style
+
+    func makeUIViewController(context: Context) -> ScreenViewController {
+        ScreenViewController(screen: ScreenUIView(emulator: emulator, style: style))
+    }
+
+    func updateUIViewController(_ controller: ScreenViewController, context: Context) {
+        controller.screen.emulator = emulator
+        controller.screen.style = style
+    }
+}
+
+final class ScreenViewController: GCEventViewController {
+    let screen: ScreenUIView
+    private var observer: NSObjectProtocol?
+
+    init(screen: ScreenUIView) {
+        self.screen = screen
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    override func loadView() { view = screen }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        update()
+        observer = NotificationCenter.default.addObserver(forName: .GCControllerDidBecomeCurrent, object: nil,
+                                                          queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.update() }
+        }
+    }
+
+    isolated deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] { [screen] }
+
+    /// UIKit gets a controller's presses only while the one in use isn't a
+    /// gamepad (the Siri Remote).
+    private func update() {
+        controllerUserInteractionEnabled = GCController.current?.extendedGamepad == nil
+    }
+}
+#else
 struct ScreenRepresentable: UIViewRepresentable {
     let emulator: Apple2
     let style: Screen.Style
@@ -16,6 +71,7 @@ struct ScreenRepresentable: UIViewRepresentable {
         view.style = style
     }
 }
+#endif
 
 /// Runs the emulator with a display link and shows each frame's picture in
 /// its layer.  Keys: a hardware keyboard's (`pressesBegan`, ⌥ the push
@@ -91,7 +147,7 @@ final class ScreenUIView: UIView, UIKeyInput {
                 emulator.setButton(button, pressed: true)
             } else if let ascii = ascii(for: press) {
                 pressControl(false)
-                emulator.press(ascii)
+                emulator.keyDown(ascii, id: id(of: press))
             } else {
                 return true
             }
@@ -110,15 +166,23 @@ final class ScreenUIView: UIView, UIKeyInput {
         if !rest.isEmpty { super.pressesCancelled(rest, with: event) }
     }
 
-    /// Releases the buttons among `presses`; returns those that aren't ours.
+    /// Releases the keys and buttons among `presses`; returns those that aren't ours.
     private func released(_ presses: Set<UIPress>) -> Set<UIPress> {
         presses.filter { press in
             if let key = press.key, let button = KeyMap.button(for: key) {
                 emulator.setButton(button, pressed: false)
                 return false
             }
-            return ascii(for: press) == nil
+            guard ascii(for: press) != nil else { return true }
+            emulator.keyUp(id: id(of: press))
+            return false
         }
+    }
+
+    /// A press's key, the same as it goes down and up: a keyboard's key
+    /// code, else the remote's button.
+    private func id(of press: UIPress) -> Int {
+        press.key.map { $0.keyCode.rawValue } ?? 0x10000 + press.type.rawValue
     }
 
     // MARK: the on-screen keyboard

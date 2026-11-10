@@ -11,10 +11,20 @@ public final class SoundPlayer {
     private let connected: Bool
     private var stream = SpeakerStream()
 
+    #if !os(macOS)
+    /// The audio session's category, set once for every player, off the main
+    /// thread (it can block while the session is active): ambient, mixing
+    /// with other apps' sound, silent with the ring/silent switch.
+    private static let sessionCategory: Void = {
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? AVAudioSession.sharedInstance().setCategory(.ambient)
+        }
+    }()
+    #endif
+
     public init() {
         #if !os(macOS)
-        // mixes with other apps' sound, silent with the ring/silent switch
-        try? AVAudioSession.sharedInstance().setCategory(.ambient)
+        SoundPlayer.sessionCategory
         #endif
         engine.attach(node)
         if #available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *) {

@@ -62,11 +62,11 @@ import Testing
     @Test func cardsAndTheHook() {
         let m = Apple2Machine(model: .apple2e, rom: nil, diskROM: nil)
         let card = Card()
-        m.insert(card, slot: 4)
-        #expect(m.cpu.read(0xC40C) == 0x0C ^ 0x5A && m.cpu.mem[0xC4FB] == 0xFB ^ 0x5A)
-        #expect(m.cpu.read(0xC0C3) == 0x77 && card.accessed == [3])
-        m.insert(nil, slot: 4)
-        #expect(m.cpu.read(0xC40C) == 0 && m.cpu.read(0xC0C3) == 0)
+        m.insert(card, slot: 5)
+        #expect(m.cpu.read(0xC50C) == 0x0C ^ 0x5A && m.cpu.mem[0xC5FB] == 0xFB ^ 0x5A)
+        #expect(m.cpu.read(0xC0D3) == 0x77 && card.accessed == [3])
+        m.insert(nil, slot: 5)
+        #expect(m.cpu.read(0xC50C) == 0 && m.cpu.read(0xC0D3) == 0)
 
         var seen: [(UInt16, Bool)] = []
         m.ioHook = { address, write, _ in

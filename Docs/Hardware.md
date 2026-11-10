@@ -68,7 +68,7 @@ where nothing drives the bus. There is no floating‑bus emulation.
 | Address | Read/write | Effect |
 |---|---|---|
 | $C000‑$C00F | R | keyboard: last key, bit 7 set while new |
-| $C010‑$C01F | R/W | clear the keyboard strobe (bit 7) |
+| $C010 | R/W | clear the keyboard strobe (bit 7); the //e reads any‑key‑down in bit 7 |
 | $C020 | | cassette out (ignored) |
 | $C030‑$C03F | R/W | speaker click: its cycle into `clicks` (the app's sound, below) |
 | $C040 | | utility strobe (ignored) |
@@ -78,11 +78,11 @@ where nothing drives the bus. There is no floating‑bus emulation.
 | $C056 / $C057 | R/W | lo‑res / hi‑res |
 | $C058‑$C05F | | annunciators (ignored) |
 | $C060 | R | cassette in (0) |
-| $C061‑$C063 | R | push buttons 0‑2, bit 7 (⌥ left/right = 0/1) |
-| $C064‑$C067 | R | paddle timers 0‑3, bit 7 set for 11 × value cycles after $C070 |
+| $C061‑$C063 | R | push buttons 0‑2, bit 7 (⌥ left/right = 0/1, a joystick's) |
+| $C064‑$C067 | R | paddle timers 0‑3, bit 7 set while running (Game port, below) |
 | $C070 | R/W | start the paddle timers |
 | $C080‑$C08F | R/W | language card (below) |
-| $C090‑$C0FF | | slot n I/O at $C080 + n × $10; slot 6 = $C0E0‑$C0EF: the Disk II (DiskII.md) |
+| $C090‑$C0FF | | slot n I/O at $C080 + n × $10; slot 6 = $C0E0‑$C0EF: the Disk II (DiskII.md); slot 4: the mouse card (Mouse, below) |
 
 ## Language card ($C080‑$C08F)
 
@@ -104,8 +104,23 @@ and power‑on: read ROM, write RAM, bank 2.
 
 ## Keyboard
 
-`Apple2Machine.press(ascii)` puts the key in the latch with bit 7 set; reading
-$C010 clears it. `KeyMap` maps the Mac's keys (and a hardware keyboard's on
+`Keyboard` is the latch at $C000 (the last key, bit 7 – the strobe – set
+until $C010 clears it) and the keys held down. The host tells the machine
+keys going down and up (`keyDown(ascii, id:)`, `keyUp(id:)`, `releaseKeys`
+when it loses the keyboard, the id its own number for the key) and drops
+its own repeats; `press(ascii)` types a key that doesn't stay down (the
+on‑screen keyboard, scripts).
+
+* **Any key down.** On the //e, $C010 reads bit 7 set while a key is held,
+  the latch's key below.
+* **Auto‑repeat** is the //e's keyboard encoder's: the newest key held is
+  typed again after `Keyboard.repeatDelay` (half a second), then every
+  `repeatPeriod` (15 a second); letting go of it stops the repeat. It is
+  worked out where the latch is read, at that cycle, so it is the same
+  however the CPU is run. The ][ and ][+ don't repeat (their REPT key isn't
+  emulated).
+
+`KeyMap` maps the Mac's keys (and a hardware keyboard's on
 iOS, tvOS, visionOS: the same) to ASCII:
 
 | Mac | Apple | Code |
@@ -123,6 +138,70 @@ typed with ⌥ (German layout) arrive as themselves. ⌘ keys go to the menus.
 
 `Apple2Machine.type(text)` (*Paste as Keys*) queues keys. Each one goes in when the
 latch is clear and 2000 cycles have passed since the code cleared it.
+
+## Game port
+
+`GamePort`: four paddles (`paddles`, 0‑255, nil: nothing plugged in), three
+push buttons (`buttons`: the host's keys) and a two‑axis joystick
+(`joystick`: paddles 0 and 1, buttons 0 and 1).
+
+* $C070 starts each paddle's timer (a 558) for its position ×
+  `GamePort.cyclesPerStep` cycles: 2816 / 255 ≈ 11.04, as AppleWin (from
+  KEGS) – PREAD's loop counts 11 cycles a step. A paddle at 255 counts as
+  287 (KEGS): a joystick all the way over outlasts a program's count of
+  0‑255, as real sticks do. $C064 + n reads bit 7 set up to and at the
+  timer's last cycle.
+* A timer still running isn't restarted by $C070 (AppleWin, GH#985).
+* Nothing plugged in: the timer never runs out (bit 7 stays set, PREAD
+  reads 255), as on the Apple with an open input.
+* A game controller is the joystick (`GameControllers`, UI): the left stick
+  or the d‑pad, its round gate stretched to the square one, a fifth of the
+  way out the middle; A/X button 0, B/Y button 1. `Apple2` reads it every
+  frame (`readGameController`): the joystick is plugged in once a
+  controller connects, and stays in, let go, when it goes – a program reads
+  one unplugged as all the way right and down.
+
+A host's own routine reads them at a cycle of its own: `triggerPaddles(at:)`,
+`paddleRunning(_:at:)`, `readKeyboard(at:)`, `clearKeyStrobe(at:)`.
+
+## Mouse
+
+`MouseCard`, an AppleMouse II in slot 4, is always in the machine (like the
+Disk II) and seen by the code while `mouseEnabled` (else the slot is
+empty); put in, it starts afresh. The card's ROM and microcontroller aren't
+emulated (AppleWin runs Apple's firmware): its ROM page has what programs
+look for – the Pascal firmware's bytes ($Cn05 $38, $Cn07 $18, $Cn0B $01),
+the mouse's ID ($Cn0C $20, $CnFB $D6), the firmware's table at $Cn12‑$Cn19 –
+and an RTS at each routine ($Cn80 on), where the machine runs it (a trap of
+the CPU's, before the host's `onTrap`) and returns, the carry clear (set:
+failed).
+
+| Routine | Does |
+|---|---|
+| SETMOUSE | mode = A (0‑$0F; carry set past): bit 0 on, bits 1‑3 interrupt on movement, button, VBL |
+| SERVEMOUSE | the card's interrupt: its bits 1‑3 into the status hole, the IRQ line let go; carry set if it wasn't the card's |
+| READMOUSE | position and status into the screen holes; moved and pressed cleared |
+| CLEARMOUSE | position 0, 0 |
+| POSMOUSE | position from the screen holes |
+| CLAMPMOUSE | A = 0: x bounds, 1: y bounds, from slot 0's holes ($0478/$0578 low, $04F8/$05F8 high) |
+| HOMEMOUSE | position at the bounds' top left |
+| INITMOUSE | as at power‑on: bounds 0‑1023, position 0, mode 0 |
+
+Screen holes of slot 4: X $047C/$057C, Y $04FC/$05FC (low, high), status
+$077C, mode $07FC. The status: bit 7 the button down (or pressed since the
+last read, so a click between two reads isn't lost), bit 6 down at the last
+read, bit 5 moved since the last read, bits 1‑3 the interrupts SERVEMOUSE
+found. `reportsClickOnce` (a program's own way, not the card's): bit 7 only
+at the first read after a press, never bit 6.
+
+The host moves it in the card's counts (`moveMouse(dx:dy:)`, y down) and
+presses its button (`mouseButton(down:)`); the mouse moves only while on.
+
+**Interrupts.** The card holds the IRQ line while an interrupt waits
+(movement or the button, with their mode bits; a vertical blank, at line
+192 of each frame, with bit 3). `Apple2Machine.step` takes it (unless I is
+set) before each instruction: a host running the CPU itself steps there,
+not `cpu.step`. A call takes no time.
 
 ## The display
 

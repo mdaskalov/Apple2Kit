@@ -78,16 +78,31 @@ public nonisolated final class Apple2Machine {
     private var iie = IIeSwitches()
     var isIIe: Bool { model == .apple2e }
 
-    /// The keyboard's latch: the last key, bit 7 set until $C010 clears it.
-    private(set) var keyboard: UInt8 = 0
+    /// The keyboard: its latch, the keys held, the //e's repeat (`keyDown`).
+    public private(set) var keyboard: Keyboard
     /// Keys to type (`type`), one each time the latch is clear.
     private var typeAhead: [UInt8] = []
     private var nextTypedKey: UInt64 = 0
-    /// The three push buttons ($C061-$C063).
-    public var buttons = [false, false, false]
-    /// The four paddles, 0-255 (the timers run 11 cycles a step).
-    public var paddles: [UInt8] = [128, 128, 128, 128]
-    private var paddleTrigger: UInt64 = 0
+    /// The paddles, the push buttons and a joystick (`GamePort`).
+    public var gamePort = GamePort()
+    /// The mouse card in slot 4 (`MouseCard`), there while `mouseEnabled`.
+    public private(set) var mouse = MouseCard()
+    /// The mouse card is in slot 4: its ROM page there, its firmware run.
+    /// Put in, it starts afresh (as at power-on).
+    public var mouseEnabled = false {
+        didSet {
+            guard mouseEnabled != oldValue else { return }
+            if mouseEnabled { resetMouse() }
+            putROMPage(MouseCard.slot)
+            for call in MouseCard.Call.allCases { cpu.traps[Int(call.entry)] = mouseEnabled }
+        }
+    }
+    /// How many vertical blanks have begun (`step`, for the mouse card's interrupt).
+    private var verticalBlanks: UInt64 = 0
+    /// The host's traps (`CPU6502.traps`): asked where the CPU reaches one
+    /// that isn't the machine's own (the mouse card's firmware); true: it
+    /// handled the instruction there.
+    public var onTrap: ((UInt16) -> Bool)?
     /// Speaker clicks ($C030) so far.
     private(set) var speakerClicks = 0
     /// The CPU cycle of every click since the last `takeClicks`, when not
@@ -108,10 +123,12 @@ public nonisolated final class Apple2Machine {
         self.rom = rom
         self.diskROM = diskROM
         languageCard = LanguageCard(ramOnly: rom == nil)
+        keyboard = Keyboard(repeats: model == .apple2e)
         cpu = CPU6502(memory: [UInt8](repeating: 0, count: 0x10000))
         for page in 0xC0 ... 0xFF { cpu.ioPages[page] = true }
         cpu.ioRead = { [unowned self] in read($0) }
         cpu.ioWrite = { [unowned self] in write($0, $1) }
+        cpu.onTrap = { [unowned self] pc in runMouseFirmware(at: pc) || onTrap?(pc) == true }
         powerOn()
     }
 
@@ -128,7 +145,8 @@ public nonisolated final class Apple2Machine {
         for slot in 1 ... 7 where cards[slot] != nil { putROMPage(slot) }
         setIIeSwitches(IIeSwitches())
         video = VideoMode()
-        keyboard = 0
+        keyboard = Keyboard(repeats: isIIe)
+        resetMouse()
         typeAhead = []
         disk.reset()
         diskROMHidden = false
@@ -161,15 +179,120 @@ public nonisolated final class Apple2Machine {
         let end = cpu.cycles + UInt64(cycles)
         while cpu.cycles < end {
             if !typeAhead.isEmpty { typeNextKey() }
-            try cpu.step()
+            try step()
         }
+    }
+
+    /// One instruction, an interrupt first if one is waiting: the IRQ line
+    /// (the mouse card's) taken unless I is set.  A host running the CPU
+    /// itself steps here, not `cpu.step`, for the interrupts.
+    @inline(__always) public func step() throws {
+        if mouseEnabled { serveMouseLine() }
+        try cpu.step()
+    }
+
+    /// The mouse card's vertical blank interrupt, and its IRQ line.
+    private func serveMouseLine() {
+        if mouse.interruptsAtVBL {
+            // a vertical blank begins at line 192 of each frame
+            let frame = UInt64(Apple2Machine.cyclesPerFrame), start = UInt64(192 * 65)
+            let blanks = (cpu.cycles + frame - start) / frame
+            if blanks != verticalBlanks {
+                verticalBlanks = blanks
+                mouse.verticalBlank()
+            }
+        }
+        if mouse.irq { cpu.irq() }
+    }
+
+    // MARK: the mouse card
+
+    /// The mouse moved by (dx, dy) of the card's counts, y down.
+    public func moveMouse(dx: Int, dy: Int) {
+        mouse.move(dx: dx, dy: dy)
+    }
+
+    /// The mouse's button pressed or let go.
+    public func mouseButton(down: Bool) {
+        mouse.set(button: down)
+    }
+
+    /// A program's own way with the mouse's button (`MouseCard.reportsClickOnce`).
+    public var mouseReportsClickOnce: Bool {
+        get { mouse.reportsClickOnce }
+        set { mouse.reportsClickOnce = newValue }
+    }
+
+    /// The card as at power-on, the host's `reportsClickOnce` kept.
+    private func resetMouse() {
+        let clickOnce = mouse.reportsClickOnce
+        mouse = MouseCard()
+        mouse.reportsClickOnce = clickOnce
+    }
+
+    /// The firmware's routine at `pc`, while the card is in: run, and
+    /// returned from like RTS, the carry clear or set.
+    private func runMouseFirmware(at pc: UInt16) -> Bool {
+        guard mouseEnabled, let call = MouseCard.Call.allCases.first(where: { $0.entry == pc }) else { return false }
+        let carry = mouse.run(call, a: cpu.a, mem: &cpu.mem)
+        cpu.p = carry ? cpu.p | CPU6502.Flag.carry : cpu.p & ~CPU6502.Flag.carry
+        cpu.returnFromSubroutine()
+        return true
     }
 
     // MARK: keyboard
 
-    /// A key pressed: its ASCII code (0-127).
+    /// A key typed: its ASCII code (0-127) in the latch, as from a key
+    /// pressed and let go at once (it doesn't repeat).
     public func press(_ ascii: UInt8) {
-        keyboard = ascii | 0x80
+        keyboard.press(ascii)
+    }
+
+    /// Key `id` (the host's own number for it) went down, typing `ascii`
+    /// (0-127).  It is down until `keyUp`: the //e's any-key-down, and its
+    /// repeat (`Keyboard`).  The host's own repeats are left out.
+    public func keyDown(_ ascii: UInt8, id: Int) {
+        keyboard.keyDown(ascii, id: id, at: cpu.cycles)
+    }
+
+    /// Key `id` went up.
+    public func keyUp(id: Int) {
+        keyboard.keyUp(id: id)
+    }
+
+    /// Every key up: the host lost the keyboard.
+    public func releaseKeys() {
+        keyboard.releaseAll()
+    }
+
+    /// $C000 read at `cycle` (by a host's routine in place of the code):
+    /// the latch, a held key typed again if it repeated.
+    public func readKeyboard(at cycle: UInt64) -> UInt8 {
+        keyboard.update(at: cycle)
+        return keyboard.latch
+    }
+
+    /// $C010 at `cycle`: the strobe cleared.  The //e reads any-key-down in
+    /// bit 7 and the key below.
+    @discardableResult
+    public func clearKeyStrobe(at cycle: UInt64) -> UInt8 {
+        keyboard.update(at: cycle)
+        if keyboard.latch & 0x80 != 0 { nextTypedKey = cycle + 2000 }
+        keyboard.latch &= 0x7F
+        return (isIIe && keyboard.anyKeyDown ? 0x80 : 0) | keyboard.latch
+    }
+
+    // MARK: game port
+
+    /// $C070 at `cycle` (by a host's routine in place of the code): the
+    /// paddles' timers start (`GamePort`).
+    public func triggerPaddles(at cycle: UInt64) {
+        gamePort.trigger(at: cycle)
+    }
+
+    /// Paddle `n`'s timer runs at `cycle` ($C064 + n, bit 7).
+    public func paddleRunning(_ n: Int, at cycle: UInt64) -> Bool {
+        gamePort.running(n, at: cycle)
     }
 
     /// Types `text` key by key, as fast as the code takes them.  Newlines are
@@ -198,8 +321,8 @@ public nonisolated final class Apple2Machine {
     /// The next key of `typeAhead` once the code has taken the last one and
     /// had a moment (2000 cycles) for it.
     private func typeNextKey() {
-        guard keyboard & 0x80 == 0, cpu.cycles >= nextTypedKey else { return }
-        keyboard = typeAhead.removeFirst() | 0x80
+        guard keyboard.latch & 0x80 == 0, cpu.cycles >= nextTypedKey else { return }
+        keyboard.press(typeAhead.removeFirst())
     }
 
     // MARK: memory map
@@ -213,7 +336,7 @@ public nonisolated final class Apple2Machine {
         if a < 0xC100 { return io(a, write: false, value: 0) }
         if isIIe, let byte = internalROM(a) { return byte }
         let slot = Int(a >> 8) - 0xC0
-        if slot < 8, cards[slot] != nil { return cpu.mem[Int(a)] }     // its ROM page (`insert`)
+        if slot < 8, hasCard(slot) { return cpu.mem[Int(a)] }         // its ROM page (`insert`)
         if slot == Apple2Machine.diskSlot, disk.hasDisk, !diskROMHidden, let diskROM { return diskROM[Int(a & 0xFF)] }
         return 0                                // empty slots, no $C800 ROM
     }
@@ -297,7 +420,7 @@ public nonisolated final class Apple2Machine {
         case 0xE: on = video.altCharset
         default: on = iie.col80
         }
-        return (on ? 0x80 : 0) | keyboard & 0x7F
+        return (on ? 0x80 : 0) | keyboard.latch & 0x7F
     }
 
     /// $C000-$C0FF: a read, or a write of `value`; both throw the switches.
@@ -307,13 +430,12 @@ public nonisolated final class Apple2Machine {
         switch low >> 4 {
         case 0x0:
             if write && isIIe { setIIeSwitch(low) }
-            if keyboard & 0x80 == 0 { diskROMHidden = false }   // BASIC waits for a key: the slot scan is over
-            return keyboard
+            let latch = readKeyboard(at: cpu.cycles)
+            if latch & 0x80 == 0 { diskROMHidden = false }      // BASIC waits for a key: the slot scan is over
+            return latch
         case 0x1:
             if isIIe && low != 0x10 { return write ? 0 : iieStatus(low & 0xF) }
-            if keyboard & 0x80 != 0 { nextTypedKey = cpu.cycles + 2000 }
-            keyboard &= 0x7F
-            return keyboard
+            return clearKeyStrobe(at: cpu.cycles)
         case 0x3:
             speakerClicks += 1
             clicks?.append(cpu.cycles)
@@ -322,13 +444,12 @@ public nonisolated final class Apple2Machine {
             if !(iie.store80 && low & 0xE == 4) { video.set(low & 0xF) }
         case 0x6:
             switch low & 7 {
-            case 1 ... 3: return buttons[(low & 7) - 1] ? 0x80 : 0
-            case 4 ... 7:
-                return cpu.cycles &- paddleTrigger < UInt64(paddles[(low & 7) - 4]) * 11 ? 0x80 : 0
+            case 1 ... 3: return gamePort.button((low & 7) - 1) ? 0x80 : 0
+            case 4 ... 7: return paddleRunning((low & 7) - 4, at: cpu.cycles) ? 0x80 : 0
             default: return 0                   // cassette in
             }
         case 0x7:
-            paddleTrigger = cpu.cycles
+            triggerPaddles(at: cpu.cycles)
         case 0x8:
             languageCard.access(low, write: write)
             mapLanguageCard()
@@ -388,9 +509,15 @@ public nonisolated final class Apple2Machine {
     /// there out (nil): its ROM page is read at $Cn00-$CnFF, its switches
     /// are $C080 + slot × 16 on.
     public func insert(_ card: Apple2Card?, slot: Int) {
-        precondition((1 ... 7).contains(slot) && slot != Apple2Machine.diskSlot, "slots 1-7 but the Disk II's")
+        precondition((1 ... 7).contains(slot) && slot != Apple2Machine.diskSlot && slot != MouseCard.slot,
+                     "slots 1-7 but the Disk II's and the mouse card's")
         cards[slot] = card
         putROMPage(slot)
+    }
+
+    /// A card is in `slot`: one inserted, or the mouse card while enabled.
+    private func hasCard(_ slot: Int) -> Bool {
+        cards[slot] != nil || slot == MouseCard.slot && mouseEnabled
     }
 
     /// A card's ROM page lies in `cpu.mem` at $Cn00 (the CPU reads it
@@ -398,7 +525,7 @@ public nonisolated final class Apple2Machine {
     /// is zeros.
     private func putROMPage(_ slot: Int) {
         let page = 0xC000 | slot << 8
-        let bytes = cards[slot]?.romPage ?? []
+        let bytes = slot == MouseCard.slot && mouseEnabled ? MouseCard.romPage : cards[slot]?.romPage ?? []
         precondition(bytes.isEmpty || bytes.count == 0x100, "a card's ROM page is 256 bytes")
         cpu.mem.replaceSubrange(page ..< page + 0x100, with: bytes.isEmpty ? [UInt8](repeating: 0, count: 0x100) : bytes)
     }
@@ -406,7 +533,8 @@ public nonisolated final class Apple2Machine {
     /// An independent machine in the same state: memory, the switches, the
     /// devices, the drives and their disks, the CPU's registers and cycles.
     /// The cards are the same (a card keeps its own state); the host's
-    /// `ioHook` and the CPU's traps and watches aren't copied.
+    /// `ioHook` and `onTrap`, and the CPU's traps and watches but the mouse
+    /// card's, aren't copied.
     public func copy() -> Apple2Machine {
         let c = Apple2Machine(model: model, rom: rom, diskROM: diskROM)
         c.cpu.mem = cpu.mem
@@ -422,9 +550,10 @@ public nonisolated final class Apple2Machine {
         c.keyboard = keyboard
         c.typeAhead = typeAhead
         c.nextTypedKey = nextTypedKey
-        c.buttons = buttons
-        c.paddles = paddles
-        c.paddleTrigger = paddleTrigger
+        c.gamePort = gamePort
+        c.mouseEnabled = mouseEnabled           // first: putting the card in resets it
+        c.mouse = mouse
+        c.verticalBlanks = verticalBlanks
         c.speakerClicks = speakerClicks
         c.clicks = clicks
         c.diskROMHidden = diskROMHidden
