@@ -8,6 +8,7 @@ import Foundation
 /// | `apple2.rom` | 12K | $D000-$FFFF of the Apple ][ |
 /// | `apple2plus.rom` | 12K | $D000-$FFFF of the Apple ][+ |
 /// | `apple2e.rom` | 16K | $C000-$FFFF of the unenhanced Apple //e |
+/// | `apple2ee.rom` | 16K | $C000-$FFFF of the enhanced Apple //e |
 /// | `disk2.rom` | 256 bytes | the Disk II's boot ROM (P5, 16 sectors) |
 ///
 /// Only the model's ROM and `disk2.rom` are needed.  From the app's bundle
@@ -36,7 +37,7 @@ public nonisolated enum ROMs {
                 "The ROM \(name).rom is missing (\(directory?.path ?? "the app's resources, or roms/ in them")). "
                     + "The app provides the ROMs (see Apple2Kit's README), or runs without them (`roms: .none`)."
             case .size(let name, let size):
-                "The ROM \(name).rom is \(size) bytes, not \(name == "disk2" ? "256" : name == "apple2e" ? "16K" : "12K")."
+                "The ROM \(name).rom is \(size) bytes, not \(name == "disk2" ? "256" : name.hasPrefix("apple2e") ? "16K" : "12K")."
             }
         }
     }

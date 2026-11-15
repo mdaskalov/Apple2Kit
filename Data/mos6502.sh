@@ -2,10 +2,10 @@
 # package (https://github.com/mdaskalov/MOS6502) into a module and a static
 # library and sets MOS6502 to the swiftc flags that use it.
 # The sources: $MOS6502_PACKAGE if set (a local working copy), otherwise a
-# clone of $MOS6502_REF (a tag or branch, default 1.0.0, as in Package.swift)
+# clone of $MOS6502_REF (a tag or branch, default 1.2.0, as in Package.swift)
 # kept in $TMPDIR.
 MOS6502_URL="https://github.com/mdaskalov/MOS6502.git"
-MOS6502_REF="${MOS6502_REF:-1.0.0}"
+MOS6502_REF="${MOS6502_REF:-1.2.0}"
 MOS6502_OUT="${TMPDIR:-/tmp}/apple2kit_mos6502"
 mkdir -p "$MOS6502_OUT"
 if [ -z "$MOS6502_PACKAGE" ]; then

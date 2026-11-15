@@ -1,11 +1,13 @@
 # Apple2Kit
 
-An Apple ][ / ][+ / //e (64K) emulator as a Swift package, for SwiftUI apps on
-macOS 14, iOS/iPadOS 17, tvOS 17, watchOS 10 and visionOS 1 or later:
-48K + language card, Disk II (`.dsk`, `.do`, `.po`, `.nib`, read and write),
-text, lo‑res and hi‑res, the speaker, the keyboard. The CPU is the
-`MOS6502` package ([github.com/mdaskalov/MOS6502](https://github.com/mdaskalov/MOS6502),
-version 1.0.0).
+An Apple ][ / ][+ / //e / enhanced //e emulator as a Swift package, for
+SwiftUI apps on macOS 14, iOS/iPadOS 17, tvOS 17, watchOS 10 and visionOS 1
+or later: 48K + language card (the //e: 128K, an extended 80‑column card),
+Disk II (`.dsk`, `.do`, `.po`, `.nib`, read and write), text (40 and 80
+columns), lo‑res, hi‑res, double lo‑res and double hi‑res, the speaker, the
+keyboard. The CPU is the `MOS6502` package
+([github.com/mdaskalov/MOS6502](https://github.com/mdaskalov/MOS6502),
+version 1.2.0): the 6502, and the enhanced //e's 65C02.
 
 ## Use
 
@@ -63,7 +65,7 @@ with sound, disks, binaries and a status for a UI (`@Observable`).
 `Apple2Machine` (`apple.machine`) is the hardware alone – CPU, memory,
 switches, drives, cards – with no clock, sound or UI, also used headless.
 
-* `Apple2(model: .apple2Plus / .apple2 / .apple2e, roms: .bundle / .directory(url) / .none)`:
+* `Apple2(model: .apple2Plus / .apple2 / .apple2e / .apple2eEnhanced, roms: .bundle / .directory(url) / .none)`:
   the machine as the app runs it. `restart()`
   (power cycle: boots drive 1), `startBASIC()`, `reset()` (Ctrl‑RESET),
   `togglePause()`, `step()`; `insert` / `eject` / `diskFileData` for disks;
@@ -192,6 +194,7 @@ them, as files named after the model, with the Disk II's boot ROM:
 | `apple2.rom` | 12K (12288) | Apple ][: $D000‑$FFFF (Integer BASIC, the original monitor) |
 | `apple2plus.rom` | 12K (12288) | Apple ][+: $D000‑$FFFF (Applesoft, the autostart monitor) |
 | `apple2e.rom` | 16K (16384) | Apple //e (unenhanced): $C000‑$FFFF |
+| `apple2ee.rom` | 16K (16384) | Apple //e (enhanced): $C000‑$FFFF |
 | `disk2.rom` | 256 | the Disk II boot ROM (P5, 16 sectors) |
 
 Only the model's ROM and `disk2.rom` are needed. By default they are

@@ -1,17 +1,18 @@
 # The code
 
 ```
-Package.swift           the library Apple2Kit (macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1), on MOS6502 (git, from 1.0.0)
+Package.swift           the library Apple2Kit (macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1), on MOS6502 (git, from 1.2.0)
 Sources/Apple2Kit/
   Emulator/             the emulator core: no AppKit/SwiftUI, also built by Data/headless.sh
-    Apple2Machine.swift the machine: memory map, soft switches, language card, run, step (the IRQ line)
+    Apple2Machine.swift the machine: memory map, soft switches, language card, the //e's aux memory, run, step (the IRQ line)
     Hooks.swift         Swift where the CPU reaches an address (hooks, observers), switched by name; the trap bits
     Keyboard.swift      the keyboard latch, keys held, the //e's any-key-down and auto-repeat
     GamePort.swift      the paddle timers, push buttons and joystick
     MouseCard.swift     the AppleMouse II in slot 4: ROM page, firmware routines, interrupts
     DiskII.swift        the Disk II controller and drives (switches, stepper, latch, timing)
     DiskImage.swift     image files ⇄ nibble tracks: 6-and-2, sector orders, writing back
-    Screen.swift        the display from memory: text, lo-res, hi-res (3 styles), mixed → 560 × 192 RGBA;
+    Screen.swift        the display from memory: text (40, 80 columns), lo-res, hi-res (3 styles), double lo-res
+                        and hi-res, mixed → 560 × 192 RGBA;
                         a HiresScreen as an image (560 × 384) or a thumbnail (280 × 192)
     HiresScreen.swift   a hi-res page's 8K as 192 lines top first; which pixel each of a line's 560 dots shows
     Speaker.swift       the speaker's clicks → samples (SpeakerRenderer, SpeakerStream)
@@ -47,7 +48,7 @@ The CPU is the `MOS6502` package. It has its own git repository,
 https://github.com/mdaskalov/MOS6502; its README covers the CPU.
 
 Apple2Kit uses it as a **git** dependency
-(`https://github.com/mdaskalov/MOS6502.git`, `from: "1.0.0"`), not as a
+(`https://github.com/mdaskalov/MOS6502.git`, `from: "1.2.0"`), not as a
 local package by path: Xcode opens a local package in one window only, so
 two projects referring to the same folder can't both build. With a git
 dependency, Xcode builds from its own checkout (DerivedData/…/SourcePackages).
@@ -55,20 +56,23 @@ dependency, Xcode builds from its own checkout (DerivedData/…/SourcePackages).
 To use a change to the CPU: push it (and tag a new version) on GitHub, then
 in the app choose *File ▸ Packages ▸ Update to Latest Package Versions*
 (or `swift package update` here). `Data/mos6502.sh` (headless runner)
-clones the tag `$MOS6502_REF` (default `1.0.0`, or a branch such as `main`)
+clones the tag `$MOS6502_REF` (default `1.2.0`, or a branch such as `main`)
 into `$TMPDIR`; set `MOS6502_PACKAGE` to a local working copy to compile
 that instead, uncommitted changes included.
 
 Things used here:
 
-* `CPU6502(memory:)` takes a 64K flat `mem`.
+* `CPU6502(memory:, variant:)` takes a 64K flat `mem`; the enhanced //e's
+  is a `.cmos65C02` (`Model.cpuVariant`), the rest `.nmos6502`.
 * `ioPages[page] = true` sends that page's reads and writes to
-  `ioRead`/`ioWrite`.
+  `ioRead`/`ioWrite`; `ioWritePages[page] = true` its writes only (the
+  //e's pages read from one bank and written to the other).
 * `step()` runs one instruction, and `cycles` counts on. While an
   instruction reads or writes I/O, `cycles` is the cycle of that access,
   which `DiskII` uses for its timing.
 * `reset()` goes through $FFFC.
-* `step()` throws on a JAM opcode. The app pauses and says where.
+* `step()` throws on a JAM opcode (the 6502's; the 65C02 has none). The
+  app pauses and says where.
 
 ## Apple2 and Apple2Machine
 
@@ -226,14 +230,12 @@ cd Data
 
 ## Adding things
 
-**128K //e, 80 columns.** The //e runs with 64K (Hardware.md, *The //e*).
-For 80 columns (`PR#3`) and 128K software it needs aux memory (RAMRD,
-RAMWRT, ALTZP, 80STORE with PAGE2/HIRES) and the 80‑column display (aux
-and main bytes in turn, 560 dots), and Delete as $7F. Aux memory doesn't
-fit a flat `mem`: either swap 48K banks into
-`cpu.mem` when RAMRD/RAMWRT/ALTZP change, or make more pages I/O pages.
-The CPU's `push`/`pull` use `mem` directly, so ALTZP needs the swap. The
-enhanced //e needs a 65C02, which `MOS6502` doesn't do.
+**MouseText.** The enhanced //e's 32 icons at $40‑$5F with ALTCHARSET
+need their glyphs in `Charset` (the font has none); the firmware and
+some programs (menus, windows) draw with them.
+
+**Delete as $7F** on the //e (the Mac's delete key is ← now, $08, as most
+programs want for backspace).
 
 **`.woz` images.** They carry the bits of each track with their timing, for
 copy‑protected originals. Replace the nibble array with a bit stream and

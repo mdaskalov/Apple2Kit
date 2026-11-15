@@ -9,8 +9,11 @@ import MOS6502
 /// * text: 40 × 24 characters from `Charset`, inverse below $40, flashing
 ///   $40-$7F (the ][ and ][+ have no lower case: $E0-$FF show as $A0-$BF;
 ///   the //e shows it, and with ALTCHARSET $40-$7F inverse, $60-$7F lower case);
-/// * lo-res: 40 × 48 blocks in the 16 colours;
+///   the //e's 80 columns: aux and main memory's characters in turn;
+/// * lo-res: 40 × 48 blocks in the 16 colours (the //e's double lo-res: 80 × 48);
 /// * hi-res: 280 × 192 in one of the three `Style`s;
+/// * the //e's double hi-res: 560 dots a line from aux and main memory,
+///   140 × 192 in the 16 colours (on the monochrome screen the dots);
 /// * mixed: graphics with the text's last 4 lines.
 ///
 /// Docs/Hardware.md has the memory layout.
@@ -82,33 +85,40 @@ public nonisolated enum Screen {
         (page2 ? 0x4000 : 0x2000) + (y & 7) * 0x400 + (y >> 3 & 7) * 0x80 + (y >> 6) * 0x28
     }
 
-    /// Draws the display of `memory` (64K) in `mode` into `pixels` (560 × 192).
-    /// `flash`: flashing characters show inverse now.  `lowercase`: the //e's
-    /// character sets.
-    static func render(_ memory: UnsafeBufferPointer<UInt8>, mode: VideoMode, flash: Bool, lowercase: Bool = false,
-                       style: Style, into pixels: UnsafeMutableBufferPointer<UInt32>) {
-        let m = memory.baseAddress!, out = pixels.baseAddress!
+    /// Draws the display of `main` memory (and the //e's `aux` memory, 48K
+    /// each) in `mode` into `pixels` (560 × 192).  `flash`: flashing
+    /// characters show inverse now.  `lowercase`: the //e's character sets.
+    /// 80 columns, double lo-res and double hi-res need `aux`.
+    static func render(_ main: UnsafePointer<UInt8>, aux: UnsafePointer<UInt8>? = nil, mode: VideoMode, flash: Bool,
+                       lowercase: Bool = false, style: Style, into pixels: UnsafeMutableBufferPointer<UInt32>) {
+        let out = pixels.baseAddress!
         let fg = style == .monochrome ? green : white
+        let aux80 = mode.col80 ? aux : nil, double = mode.dhires ? aux80 : nil
         if mode.text {
-            drawText(m, rows: 0 ..< 24, mode: mode, flash: flash, lowercase: lowercase, fg: fg, out)
+            drawText(main, aux80, rows: 0 ..< 24, mode: mode, flash: flash, lowercase: lowercase, fg: fg, out)
             return
         }
         let split = mode.mixed ? 20 : 24
-        if mode.hires {
-            drawHires(m, lines: 0 ..< split * 8, page2: mode.page2, style: style, out)
-        } else {
-            drawLores(m, rows: 0 ..< split, page2: mode.page2, style: style, out)
+        switch (mode.hires, double) {
+        case (true, nil): drawHires(main, lines: 0 ..< split * 8, page2: mode.page2, style: style, out)
+        case (true, let aux?): drawDoubleHires(main, aux, lines: 0 ..< split * 8, page2: mode.page2, style: style, out)
+        case (false, let aux): drawLores(main, aux, rows: 0 ..< split, page2: mode.page2, style: style, out)
         }
-        if mode.mixed { drawText(m, rows: 20 ..< 24, mode: mode, flash: flash, lowercase: lowercase, fg: fg, out) }
+        if mode.mixed { drawText(main, aux80, rows: 20 ..< 24, mode: mode, flash: flash, lowercase: lowercase, fg: fg, out) }
     }
 
-    private static func drawText(_ m: UnsafePointer<UInt8>, rows: Range<Int>, mode: VideoMode, flash: Bool,
-                                 lowercase: Bool, fg: UInt32, _ out: UnsafeMutablePointer<UInt32>) {
+    /// Text rows: 40 characters a row from `m`, each 14 dots wide; with `aux`
+    /// (80 columns) 80, 7 dots each, aux memory's first.
+    private static func drawText(_ m: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>?, rows: Range<Int>,
+                                 mode: VideoMode, flash: Bool, lowercase: Bool, fg: UInt32,
+                                 _ out: UnsafeMutablePointer<UInt32>) {
+        let columns = aux == nil ? 40 : 80, dots = aux == nil ? 2 : 1
         Charset.glyphs.withUnsafeBufferPointer { glyphs in
             for row in rows {
                 let address = textAddress(row: row, page2: mode.page2)
-                for column in 0 ..< 40 {
-                    let code = m[address + column]
+                for column in 0 ..< columns {
+                    let code = aux.map { column & 1 == 0 ? $0[address + column / 2] : m[address + column / 2] }
+                        ?? m[address + column]
                     // $00-$1F and $40-$5F, $80-$9F, $C0-$DF are @A-Z[\]^_; the rest space to ?
                     let c = Int(code & 0x3F)
                     var glyph = (c < 0x20 ? c + 0x40 : c) - Charset.first
@@ -119,11 +129,10 @@ public nonisolated enum Screen {
                     let inverse = code < 0x40 || (code < 0x80 && (flash || (lowercase && mode.altCharset)))
                     for y in 0 ..< 8 {
                         let bits = glyphs[glyph * 8 + y]
-                        let o = out + (row * 8 + y) * width + column * 14
+                        let o = out + (row * 8 + y) * width + column * 7 * dots
                         for x in 0 ..< 7 {
                             let c = (bits >> x & 1 != 0) != inverse ? fg : black
-                            o[2 * x] = c
-                            o[2 * x + 1] = c
+                            for d in 0 ..< dots { o[dots * x + d] = c }
                         }
                     }
                 }
@@ -131,19 +140,59 @@ public nonisolated enum Screen {
         }
     }
 
-    private static func drawLores(_ m: UnsafePointer<UInt8>, rows: Range<Int>, page2: Bool,
-                                  style: Style, _ out: UnsafeMutablePointer<UInt32>) {
+    /// Lo-res rows: 40 blocks a row from `m`, 14 dots wide; with `aux`
+    /// (double lo-res) 80, 7 dots each, aux memory's first, its colours
+    /// rotated a bit to the left (the 7 dots it is ahead shift its colour's phase).
+    private static func drawLores(_ m: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>?, rows: Range<Int>,
+                                  page2: Bool, style: Style, _ out: UnsafeMutablePointer<UInt32>) {
+        let blocks = aux == nil ? 40 : 80, dots = aux == nil ? 14 : 7
         for row in rows {
             let address = textAddress(row: row, page2: page2)
-            for column in 0 ..< 40 {
-                let byte = m[address + column]
+            for block in 0 ..< blocks {
+                let fromAux = aux != nil && block & 1 == 0
+                let byte = aux.map { fromAux ? $0[address + block / 2] : m[address + block / 2] } ?? m[address + block]
                 for half in 0 ..< 2 {
-                    let index = Int(half == 0 ? byte & 0xF : byte >> 4)
+                    var index = Int(half == 0 ? byte & 0xF : byte >> 4)
+                    if fromAux { index = rotatedLeft(index) }
                     let colour = style != .monochrome ? loresColours[index] : index == 0 ? black : green
                     for y in 0 ..< 4 {
-                        let o = out + (row * 8 + half * 4 + y) * width + column * 14
-                        for x in 0 ..< 14 { o[x] = colour }
+                        let o = out + (row * 8 + half * 4 + y) * width + block * dots
+                        for x in 0 ..< dots { o[x] = colour }
                     }
+                }
+            }
+        }
+    }
+
+    /// A 4-bit colour number rotated a bit to the left.
+    @inline(__always) private static func rotatedLeft(_ n: Int) -> Int {
+        (n << 1 & 0xF) | n >> 3
+    }
+
+    // MARK: double hi-res
+
+    /// Double hi-res lines: each line's 560 dots from the 40 bytes of the
+    /// line in aux and main memory in turn (aux first), 7 dots a byte, bit 0
+    /// first.  In colour each 4 dots are a pixel, of the lo-res colour their
+    /// bits make: dot 0 bit 1, dot 1 bit 2, dot 2 bit 3, dot 3 bit 0 – as lo-res
+    /// colours lie on the dots; on the monochrome screen the dots themselves.
+    private static func drawDoubleHires(_ m: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>, lines: Range<Int>,
+                                        page2: Bool, style: Style, _ out: UnsafeMutablePointer<UInt32>) {
+        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: width) { dots in
+            for y in lines {
+                let address = hiresAddress(line: y, page2: page2), o = out + y * width
+                for b in 0 ..< 80 {
+                    let byte = b & 1 == 0 ? aux[address + b / 2] : m[address + b / 2]
+                    for i in 0 ..< 7 { dots[b * 7 + i] = byte >> i & 1 }
+                }
+                if style == .monochrome {
+                    for d in 0 ..< width { o[d] = dots[d] != 0 ? green : black }
+                    continue
+                }
+                for x in stride(from: 0, to: width, by: 4) {
+                    let n = Int(dots[x] | dots[x + 1] << 1 | dots[x + 2] << 2 | dots[x + 3] << 3)
+                    let colour = loresColours[rotatedLeft(n)]
+                    for d in 0 ..< 4 { o[x + d] = colour }
                 }
             }
         }
@@ -313,9 +362,9 @@ nonisolated extension Apple2Machine {
     /// The display now, 560 × 192 RGBA.
     func screenPixels(style: Screen.Style) -> [UInt32] {
         var pixels = [UInt32](repeating: Screen.black, count: Screen.width * Screen.height)
-        cpu.mem.withUnsafeBufferPointer { memory in
+        withMemory { main, aux in
             pixels.withUnsafeMutableBufferPointer { out in
-                Screen.render(memory, mode: video, flash: flashOn, lowercase: isIIe, style: style, into: out)
+                Screen.render(main, aux: aux, mode: displayMode, flash: flashOn, lowercase: isIIe, style: style, into: out)
             }
         }
         return pixels
@@ -326,18 +375,21 @@ nonisolated extension Apple2Machine {
         Screen.image(screenPixels(style: style), rowsTwice: rowsTwice)
     }
 
-    /// Hi-res page 1 or 2 (`page2`; nil: the one shown) as a screen.
+    /// Hi-res page 1 or 2 (`page2`; nil: the one shown) of main memory as a screen.
     public func hiresScreen(page2: Bool? = nil) -> HiresScreen {
-        HiresScreen(cpu.mem, base: page2 ?? video.page2 ? 0x4000 : 0x2000)
+        HiresScreen(ram(), base: page2 ?? displayMode.page2 ? 0x4000 : 0x2000)
     }
 
-    /// The text page as text, 24 lines of 40 (the page shown, or page 1),
-    /// inverse and flashing as plain characters.
+    /// The text page as text, 24 lines of 40 (the page shown, or page 1;
+    /// 80 with the //e's 80 columns on), inverse and flashing as plain
+    /// characters.
     public func screenText(page2: Bool? = nil) -> String {
-        (0 ..< 24).map { row in
-            let address = Screen.textAddress(row: row, page2: page2 ?? video.page2)
-            return String((0 ..< 40).map { column -> Character in
-                let code = cpu.mem[address + column]
+        let main = ram(), aux = video.col80 ? ram(aux: true) : []
+        return (0 ..< 24).map { row in
+            let address = Screen.textAddress(row: row, page2: page2 ?? displayMode.page2)
+            return String((0 ..< (aux.isEmpty ? 40 : 80)).map { column -> Character in
+                let code = aux.isEmpty ? main[address + column]
+                    : column & 1 == 0 ? aux[address + column / 2] : main[address + column / 2]
                 if isIIe, code >= 0xE0 || (video.altCharset && code & 0xE0 == 0x60) {
                     return Character(Unicode.Scalar(code & 0x7F))
                 }

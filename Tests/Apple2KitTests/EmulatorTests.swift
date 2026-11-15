@@ -59,6 +59,23 @@ func loadAndRunBinary(model: Apple2.Model) throws {
     #expect(emulator.screenText.contains("print 6*7"))
 }
 
+/// PR#3: the //e's 80-column firmware in aux memory, a 50-character line on one row.
+@MainActor
+@Test(.enabled(if: hasROMs([.apple2e, .apple2eEnhanced]), "no ROMs"), arguments: [Apple2.Model.apple2e, .apple2eEnhanced])
+func iieEightyColumns(model: Apple2.Model) throws {
+    let emulator = Apple2(model: model, roms: .directory(romDirectory))
+    try run(emulator, 1)
+    emulator.type("PR#3\n")
+    try run(emulator, 1)
+    let line = "0123456789ABCDEFGHIJ0123456789ABCDEFGHIJ0123456789"
+    emulator.type("PRINT \"\(line)\"\n")
+    try run(emulator, 1)
+    #expect(emulator.machine.video.col80)
+    let rows = emulator.screenText.split(separator: "\n", omittingEmptySubsequences: false)
+    #expect(rows.count == 24 && rows.allSatisfy { $0.count == 80 })
+    #expect(rows.contains { $0.hasPrefix(line + " ") })
+}
+
 @Test func loadAddressFromName() {
     #expect(Apple2.loadAddress(in: "GAME#064000.bin") == 0x4000)
     #expect(Apple2.loadAddress(in: "GAME.bin") == nil)

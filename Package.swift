@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "Apple2Kit", targets: ["Apple2Kit"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/mdaskalov/MOS6502.git", from: "1.0.0"),
+        .package(url: "https://github.com/mdaskalov/MOS6502.git", from: "1.2.0"),
     ],
     targets: [
         .target(

@@ -61,7 +61,7 @@ final class ScreenNSView: NSView {
     /// A key down, by its key code until it goes up; the Mac's repeats are
     /// left out (the //e repeats itself).
     override func keyDown(with event: NSEvent) {
-        if let key = KeyMap.ascii(for: event, lowercase: emulator.model == .apple2e) {
+        if let key = KeyMap.ascii(for: event, lowercase: emulator.model.isIIe) {
             if !event.isARepeat { emulator.keyDown(key, id: Int(event.keyCode)) }
         } else {
             super.keyDown(with: event)

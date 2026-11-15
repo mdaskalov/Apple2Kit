@@ -131,7 +131,7 @@ final class ScreenUIView: UIView, UIKeyInput {
 
     /// The Apple key for a press: a keyboard's, or the Siri Remote's.
     private func ascii(for press: UIPress) -> UInt8? {
-        if let key = press.key { return KeyMap.ascii(for: key, lowercase: emulator.model == .apple2e) }
+        if let key = press.key { return KeyMap.ascii(for: key, lowercase: emulator.model.isIIe) }
         #if os(tvOS)
         return KeyMap.ascii(for: press.type)
         #else

@@ -1,7 +1,9 @@
 # The machine as emulated
 
 An Apple ][ or ][+ with 48K of RAM, a 16K language card in slot 0 and a
-Disk II controller in slot 6. Code: `Sources/Apple2Kit/Emulator/Apple2Machine.swift`.
+Disk II controller in slot 6; or a //e (unenhanced or enhanced) with 128K:
+64K and an extended 80‑column card (*The //e*, below). Code:
+`Sources/Apple2Kit/Emulator/Apple2Machine.swift`.
 
 ## Memory map
 
@@ -29,9 +31,10 @@ program code in RAM) is a plain array access. Code running in ROM (BASIC,
 the monitor) goes through a closure on every fetch. That is fast enough
 (about 100× real time in a release build).
 
-The stack (`push`/`pull` in the CPU) and the display read `cpu.mem` directly.
-That is right for a ][+, and for the 64K //e here, which has no auxiliary
-memory. A 128K //e would need more (Emulator.md).
+The stack (`push`/`pull` in the CPU) reads `cpu.mem` directly. On the //e
+`cpu.mem` holds, page by page, the bank the CPU reads (*Aux memory*,
+below), so that stays right; the display reads both banks
+(`withMemory`).
 
 ## ROMs
 
@@ -45,8 +48,7 @@ boots, the CPU's vectors are RAM, the app loads the program and starts it).
 | `apple2.rom` | 12K | $D000‑$FFFF of the ][: (Programmer's Aid at $D000), Integer BASIC at $E000, original monitor; RESET $FF59 |
 | `disk2.rom` | 256 | the Disk II boot ROM (P5, 16 sectors) at $C600 |
 | `apple2e.rom` | 16K | $C000‑$FFFF of the unenhanced //e: its firmware at $C100‑$CFFF (80 columns at $C300/$C800), Applesoft and the monitor at $D000 |
-
-The enhanced //e's ROM isn't used (it needs a 65C02).
+| `apple2ee.rom` | 16K | $C000‑$FFFF of the enhanced //e, laid out the same; its code uses the 65C02's instructions |
 
 **Booting:** at power‑on the ][+'s autostart ROM scans the slots from 7
 down for a disk controller ($Cn01 = $20, $Cn03 = $00, $Cn05 = $03) and jumps
@@ -74,13 +76,15 @@ where nothing drives the bus. There is no floating‑bus emulation.
 | $C040 | | utility strobe (ignored) |
 | $C050 / $C051 | R/W | graphics / text |
 | $C052 / $C053 | R/W | full screen / mixed (graphics + 4 text lines) |
-| $C054 / $C055 | R/W | page 1 / page 2 |
+| $C054 / $C055 | R/W | page 1 / page 2 (the //e with 80STORE: the bank of page 1, below) |
 | $C056 / $C057 | R/W | lo‑res / hi‑res |
-| $C058‑$C05F | | annunciators (ignored) |
+| $C058‑$C05D | | annunciators 0‑2 (ignored) |
+| $C05E / $C05F | R/W | annunciator 3 off / on: the //e's DHIRES on / off (double hi‑res, double lo‑res with 80COL) |
 | $C060 | R | cassette in (0) |
 | $C061‑$C063 | R | push buttons 0‑2, bit 7 (⌥ left/right = 0/1, a joystick's) |
 | $C064‑$C067 | R | paddle timers 0‑3, bit 7 set while running (Game port, below) |
 | $C070 | R/W | start the paddle timers |
+| $C07F | R | the //e: DHIRES in bit 7 (RDDHIRES) |
 | $C080‑$C08F | R/W | language card (below) |
 | $C090‑$C0FF | | slot n I/O at $C080 + n × $10; slot 6 = $C0E0‑$C0EF: the Disk II (DiskII.md); slot 4: the mouse card (Mouse, below) |
 
@@ -235,12 +239,19 @@ The font is `Charset.glyphs`: 96 glyphs (ASCII $20‑$7F, 8 rows × 7 dots,
 bit 0 leftmost), made by `Data/charset.py` from a bitmap
 font file. The //e shows the lower case at $E0‑$FF; with
 ALTCHARSET ($C00F) $40‑$7F are inverse instead of flashing, $60‑$7F lower
-case (MouseText, the enhanced //e's, isn't there).
+case (MouseText, the enhanced //e's at $40‑$5F, isn't there: inverse
+capitals show in its place).
+
+**80 columns** (the //e's 80COL, $C00D): each text row is 80 characters,
+aux memory's byte then main memory's at each of the 40 addresses, 7 dots
+each. With mixed graphics the last 4 rows too.
 
 ## The //e
 
-`Apple2.Model.apple2e`, the unenhanced //e with 64K (no aux memory, no
-80‑column card):
+`Apple2.Model.apple2e`, the unenhanced //e (6502), and
+`.apple2eEnhanced`, the enhanced //e (65C02, its ROM: lower case in
+Applesoft, MouseText in its firmware), both with 128K: an extended
+80‑column card in the aux slot.
 
 * **ROM:** 16K from $C000. $D000‑$FFFF as on the ][+. $C100‑$CFFF is
   its own firmware when INTCXROM ($C007) is on; $C300 is (unless
@@ -250,13 +261,51 @@ case (MouseText, the enhanced //e's, isn't there).
   ALTZP, SLOTC3ROM, 80COL, ALTCHARSET, off/on. Read at $C011‑$C01F, bit 7,
   with BSRBANK2, BSRREADRAM, VBL ($C019: 1 outside the vertical blank,
   from the cycle count) and the video switches; only $C010 clears the
-  keyboard strobe.
-* **No aux memory:** with RAMRD/RAMWRT on, pages $02‑$BF go through
-  `read`/`write`: reads give 0, writes go nowhere. ALTZP and 80STORE change
-  nothing (80STORE keeps PAGE2 from switching the page shown). So `PR#3`
-  (80 columns) doesn't work: half its characters go to aux memory.
+  keyboard strobe. RESET turns them all off (and 80COL, ALTCHARSET).
+* **Aux memory:** 64K more, the bank picked page by page
+  (`Apple2Machine.banks(of:)`):
+
+  | Pages | Read from / written to aux |
+  |---|---|
+  | $00‑$01 (zero page, stack) and the language card ($D000‑$FFFF, its own 16K) | ALTZP |
+  | $04‑$07 (text page 1) | with 80STORE: PAGE2; else RAMRD / RAMWRT |
+  | $20‑$3F (hi‑res page 1) | with 80STORE and HIRES: PAGE2; else RAMRD / RAMWRT |
+  | the rest of $02‑$BF | RAMRD / RAMWRT |
+
+  With 80STORE, PAGE2 picks the bank and page 1 is shown
+  (`Apple2Machine.displayMode`).
 * **Keyboard:** lower case from the Mac's keys and in `type`. The
-  unenhanced //e's Applesoft takes commands in capitals only (caps lock).
+  unenhanced //e's Applesoft takes commands in capitals only (caps lock);
+  the enhanced //e's takes them in lower case too.
+
+**Aux memory in flat memory.** The CPU's `mem` is 64K, so each page below
+$C000 holds the bank the CPU reads there; the other bank's copy of the
+page is in `banks` (main at 0, aux at $C000; the copy of the bank in
+`mem` is stale there). After every switch of the memory (`mapAuxMemory`),
+a page whose read bank changed is swapped: `mem`'s 256 bytes to `banks`,
+the other bank's from `banks`. A page read from one bank and written to
+the other (RAMRD ≠ RAMWRT) is one of the CPU's `ioWritePages`: its reads
+come from `mem` at full speed, its writes go through `write` to `banks`.
+ALTZP swaps the language card's RAM for the other bank's
+(`otherLanguageCardRAM`). As in AppleWin, a switch costs a few page
+copies; code that flips PAGE2 with 80STORE on for every byte it writes
+(double hi‑res drawing) swaps 32 pages each time, still far faster than
+real time. The display (`withMemory`) copies the pages in `mem` to
+`banks` first, then draws from both.
+
+**Double hi‑res** (80COL, DHIRES, HIRES, graphics): each line is 560 dots,
+40 bytes of aux memory and 40 of main in turn (aux first), 7 dots a byte,
+bit 0 first, from the hi‑res page's addresses (page 2 at $4000 in both
+banks). In colour every 4 dots, from the line's start, are one of 140
+pixels, of the lo‑res colour (`Screen.loresColours`) their bits make,
+rotated a bit to the left: dot 0 → bit 1, dot 1 → bit 2, dot 2 → bit 3,
+dot 3 → bit 0. That is how lo‑res colours lie on the dots, so double
+hi‑res shows lo‑res colour n where its dots repeat n's pattern. Mono: the
+dots. No fringes between pixels, as an RGB monitor shows it.
+
+**Double lo‑res** (80COL, DHIRES, lo‑res): 80 × 48 blocks, aux memory's
+then main's, 7 dots wide; an aux block's colour is its nibble rotated a bit
+to the left, as AppleWin has it (it is 7 dots, a phase of 3, ahead).
 
 **Lo‑res:** each text byte is two blocks, low nibble on top. 16 colours
 (`Screen.loresColours`).

@@ -2,7 +2,7 @@
 
 Run them from this folder. Python 3 with no dependencies; Swift via `swiftc`
 (Xcode). The MOS6502 sources are cloned from GitHub (tag `$MOS6502_REF`,
-default `1.0.0`; `main` works too), or taken from `$MOS6502_PACKAGE` (a local
+default `1.2.0`; `main` works too), or taken from `$MOS6502_PACKAGE` (a local
 working copy) if set. The ROMs: `--roms DIR`, `$APPLE2_ROMS`, else
 `../roms` (README.md).
 
@@ -18,7 +18,7 @@ working copy) if set. The ROMs: `--roms DIR`, `$APPLE2_ROMS`, else
 ## headless.sh
 
 ```
-./headless.sh [--roms DIR] [--model plus|ii|e] ACTION...
+./headless.sh [--roms DIR] [--model plus|ii|e|ee] ACTION...
   --disk PATH / --disk2 PATH   insert a disk image in drive 1 / 2
   --eject / --eject2           take it out
   --power                      power cycle (the ][+ boots drive 1)

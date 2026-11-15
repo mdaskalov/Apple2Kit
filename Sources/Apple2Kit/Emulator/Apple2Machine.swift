@@ -2,16 +2,19 @@ import Foundation
 import MOS6502
 
 /// An Apple ][ or ][+ with 48K and a 16K language card in slot 0, or an
-/// Apple //e with 64K (no aux memory: 40 columns), and a Disk II card in
-/// slot 6, on the `MOS6502` CPU.
+/// Apple //e (unenhanced, or enhanced with a 65C02) with 128K: an extended
+/// 80-column card in its aux slot; and a Disk II card in slot 6, on the
+/// `MOS6502` CPU.
 ///
 /// $0000-$BFFF is the CPU's own flat memory (`cpu.mem`); $C000-$CFFF goes
 /// through `read`/`write` (the CPU's I/O pages): the soft switches and the
 /// slot ROMs; $D000-$FFFF too while the ROM is read there or the language
 /// card's RAM is write-protected – while that RAM is read and written, it
-/// lies in `cpu.mem` (`mapLanguageCard`), as fast as the rest
-/// (Docs/Hardware.md).  `run` runs the CPU; the display is drawn from
-/// memory when asked (`Screen`).
+/// lies in `cpu.mem` (`mapLanguageCard`), as fast as the rest.  On the //e
+/// each page of `cpu.mem` holds the bank (main or aux) the CPU reads there,
+/// and its writes go through `write` when they go to the other
+/// (`mapAuxMemory`; Docs/Hardware.md).  `run` runs the CPU; the display is
+/// drawn from memory when asked (`Screen`).
 ///
 /// Without ROMs (`init` with nil) the machine is a host's: the language
 /// card's RAM is always read and written ($C080-$C08F pick the bank only),
@@ -32,8 +35,11 @@ public nonisolated final class Apple2Machine {
         case apple2Plus = "Apple ][+"
 
         /// The unenhanced //e (6502): Applesoft, lower case, its own
-        /// firmware at $C100-$CFFF.  64K: no 80 columns yet.
+        /// firmware at $C100-$CFFF; 128K, 80 columns, double hi-res.
         case apple2e = "Apple //e"
+        /// The enhanced //e: the //e with a 65C02 and its ROM (MouseText in
+        /// the alternate character set, lower case in Applesoft).
+        case apple2eEnhanced = "Apple //e Enhanced"
 
         public var id: String { rawValue }
         /// Its ROM file (`ROMs`): `romName`.rom.
@@ -42,10 +48,15 @@ public nonisolated final class Apple2Machine {
             case .apple2: "apple2"
             case .apple2Plus: "apple2plus"
             case .apple2e: "apple2e"
+            case .apple2eEnhanced: "apple2ee"
             }
         }
         /// The ROM's size: 12K for $D000-$FFFF, the //e's 16K for $C000-$FFFF.
-        public var romSize: Int { self == .apple2e ? 0x4000 : 0x3000 }
+        public var romSize: Int { isIIe ? 0x4000 : 0x3000 }
+        /// A //e: lower case, 128K, 80 columns.
+        public var isIIe: Bool { self == .apple2e || self == .apple2eEnhanced }
+        /// Its CPU: the enhanced //e's is a 65C02.
+        public var cpuVariant: CPU6502.Variant { self == .apple2eEnhanced ? .cmos65C02 : .nmos6502 }
     }
 
     /// CPU cycles a second (NTSC: 14.31818 MHz × 65 / 912).
@@ -76,7 +87,16 @@ public nonisolated final class Apple2Machine {
     public var ioHook: ((_ address: UInt16, _ write: Bool, _ value: UInt8) -> UInt8?)?
     /// The //e's memory and ROM switches.
     private var iie = IIeSwitches()
-    var isIIe: Bool { model == .apple2e }
+    /// The //e (`Model.isIIe`): aux memory, 80 columns.
+    let isIIe: Bool
+    /// The //e's two banks below $C000, main at 0, aux at $C000 (`mapAuxMemory`):
+    /// the bank of a page that `cpu.mem` holds is stale here.
+    private var banks: [UInt8]
+    /// For each page below $C000, the bank `cpu.mem` holds: aux (true) or main.
+    private var auxInMemory = [Bool](repeating: false, count: 0xC0)
+    /// The language card's RAM of the bank ALTZP doesn't pick (aux while it is
+    /// off, main while on): `languageCard.ram` is the one used.
+    private var otherLanguageCardRAM = [UInt8](repeating: 0, count: 0x4000)
 
     /// The keyboard: its latch, the keys held, the //e's repeat (`keyDown`).
     public private(set) var keyboard: Keyboard
@@ -134,9 +154,11 @@ public nonisolated final class Apple2Machine {
         self.model = model
         self.rom = rom
         self.diskROM = diskROM
+        isIIe = model.isIIe
+        banks = [UInt8](repeating: 0, count: model.isIIe ? 0x18000 : 0)
         languageCard = LanguageCard(ramOnly: rom == nil)
-        keyboard = Keyboard(repeats: model == .apple2e)
-        cpu = CPU6502(memory: [UInt8](repeating: 0, count: 0x10000))
+        keyboard = Keyboard(repeats: model.isIIe)
+        cpu = CPU6502(memory: [UInt8](repeating: 0, count: 0x10000), variant: model.cpuVariant)
         for page in 0xC0 ... 0xFF { cpu.ioPages[page] = true }
         cpu.ioRead = { [unowned self] in read($0) }
         cpu.ioWrite = { [unowned self] in write($0, $1) }
@@ -151,11 +173,15 @@ public nonisolated final class Apple2Machine {
     public func powerOn() {
         unmapLanguageCard()
         cpu.mem.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        banks.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        auxInMemory = [Bool](repeating: false, count: 0xC0)
+        for page in 0 ..< 0xC0 { cpu.ioWritePages[page] = false }
+        iie = IIeSwitches()
+        otherLanguageCardRAM = [UInt8](repeating: 0, count: 0x4000)
         if rom == nil { cls() }                 // no ROM clears the screen
         languageCard = LanguageCard(ramOnly: rom == nil)
         mapLanguageCard()
         for slot in 1 ... 7 where cards[slot] != nil { putROMPage(slot) }
-        setIIeSwitches(IIeSwitches())
         video = VideoMode()
         keyboard = Keyboard(repeats: isIIe)
         resetMouse()
@@ -174,12 +200,14 @@ public nonisolated final class Apple2Machine {
     }
 
     /// The RESET key (Ctrl-RESET on the ][+): memory stays, the language card
-    /// goes back to ROM.
+    /// goes back to ROM; on the //e main memory, 40 columns, the first
+    /// character set.
     public func reset() {
         languageCard.reset()
         mapLanguageCard()
         setIIeSwitches(IIeSwitches())
         video.altCharset = false
+        video.col80 = false
         cpu.reset()
     }
 
@@ -344,7 +372,7 @@ public nonisolated final class Apple2Machine {
             guard !languageCard.readsRAM, let rom else { return languageCard.ram[languageCard.offset(a)] }
             return rom[Int(a) - 0xD000 + romOffset]
         }
-        if a < 0xC000 { return iie.ramRead ? 0 : cpu.mem[Int(a)] }    // //e: no aux memory
+        if a < 0xC000 { return cpu.mem[Int(a)] }                      // a host's I/O page
         if a < 0xC100 { return io(a, write: false, value: 0) }
         if isIIe, let byte = internalROM(a) { return byte }
         let slot = Int(a >> 8) - 0xC0
@@ -357,7 +385,13 @@ public nonisolated final class Apple2Machine {
         if a >= 0xD000 {
             if languageCard.writesRAM { languageCard.ram[languageCard.offset(a)] = value }
         } else if a < 0xC000 {
-            if !iie.ramWrite { cpu.mem[Int(a)] = value }                // //e: no aux memory
+            let page = Int(a >> 8)
+            let aux = isIIe && banks(of: page).write
+            if aux == (isIIe && auxInMemory[page]) {                    // a host's I/O page
+                cpu.mem[Int(a)] = value
+            } else {
+                banks[(aux ? 0xC000 : 0) + Int(a)] = value                // the //e: the bank not in `cpu.mem`
+            }
         } else if a < 0xC100 {
             _ = io(a, write: true, value: value)
         } else if a == 0xCFFF {
@@ -385,14 +419,99 @@ public nonisolated final class Apple2Machine {
         return page >= 0xC8 && iie.intC8ROM ? byte : nil
     }
 
-    /// The //e's switches as `new`; RAMRD/RAMWRT send $0200-$BFFF through
-    /// `read`/`write` (to aux memory, which isn't there).
+    /// The //e's switches as `new`, memory mapped by them: ALTZP swaps the
+    /// language card's RAM for the other bank's.
     private func setIIeSwitches(_ new: IIeSwitches) {
-        let aux = new.ramRead || new.ramWrite
-        if aux != (iie.ramRead || iie.ramWrite) {
-            for page in 0x02 ..< 0xC0 { cpu.ioPages[page] = aux }
-        }
+        let swapsCard = new.altZP != iie.altZP
+        if swapsCard { unmapLanguageCard() }
         iie = new
+        if swapsCard {
+            swap(&languageCard.ram, &otherLanguageCardRAM)
+            mapLanguageCard()
+        }
+        mapAuxMemory()
+    }
+
+    // MARK: the //e's aux memory
+
+    /// The banks page `page` (below $C0) is read from and written to, aux
+    /// (true) or main: the zero page and the stack by ALTZP; with 80STORE the
+    /// text page 1 ($04-$07), and hi-res page 1 ($20-$3F) while HIRES is on,
+    /// by PAGE2; the rest by RAMRD and RAMWRT.
+    @inline(__always) private func banks(of page: Int) -> (read: Bool, write: Bool) {
+        if page < 0x02 { return (iie.altZP, iie.altZP) }
+        if iie.store80, page >= 0x04 && page < 0x08 || video.hires && page >= 0x20 && page < 0x40 {
+            return (video.page2, video.page2)
+        }
+        return (iie.ramRead, iie.ramWrite)
+    }
+
+    /// After a switch of the //e's memory: each page of `cpu.mem` below $C000
+    /// holds the bank the CPU reads there (a page whose bank changed swapped
+    /// with `banks`), and its writes go through `write` when they go to the
+    /// other bank (the CPU's `ioWritePages`).  Code reading main memory and
+    /// writing aux runs as fast as any.
+    private func mapAuxMemory() {
+        guard isIIe else { return }
+        cpu.mem.withUnsafeMutableBufferPointer { mem in
+            banks.withUnsafeMutableBufferPointer { stored in
+                for page in 0 ..< 0xC0 {
+                    let (read, write) = banks(of: page)
+                    if read != auxInMemory[page] {
+                        let a = page << 8, inMemory = mem.baseAddress! + a
+                        (stored.baseAddress! + (read ? 0 : 0xC000) + a).update(from: inMemory, count: 0x100)
+                        inMemory.update(from: stored.baseAddress! + (read ? 0xC000 : 0) + a, count: 0x100)
+                        auxInMemory[page] = read
+                    }
+                    cpu.ioWritePages[page] = read != write
+                }
+            }
+        }
+    }
+
+    /// The display switches as the screen shows them: with 80STORE on, page 1
+    /// (PAGE2 picks a bank then).
+    public var displayMode: VideoMode {
+        var mode = video
+        if iie.store80 { mode.page2 = false }
+        return mode
+    }
+
+    /// Main memory (`aux` false) or aux memory below $C000 as it is: 48K.
+    /// Aux is the //e's only (else empty).
+    public func ram(aux: Bool = false) -> [UInt8] {
+        guard isIIe else { return aux ? [] : Array(cpu.mem[0 ..< 0xC000]) }
+        syncBanks()
+        return Array(banks[aux ? 0xC000 ..< 0x18000 : 0 ..< 0xC000])
+    }
+
+    /// Puts `bytes` in main memory from `address` (cut off at $C000),
+    /// whichever bank the CPU sees there.
+    public func writeMain(_ bytes: some Collection<UInt8>, at address: Int) {
+        for (i, byte) in zip(address ..< 0xC000, bytes) {
+            if isIIe && auxInMemory[i >> 8] { banks[i] = byte } else { cpu.mem[i] = byte }
+        }
+    }
+
+    /// `banks` up to date: the pages `cpu.mem` holds copied there (they
+    /// stay in `cpu.mem`).
+    private func syncBanks() {
+        cpu.mem.withUnsafeBufferPointer { mem in
+            banks.withUnsafeMutableBufferPointer { stored in
+                for page in 0 ..< 0xC0 {
+                    let a = page << 8
+                    (stored.baseAddress! + (auxInMemory[page] ? 0xC000 : 0) + a).update(from: mem.baseAddress! + a, count: 0x100)
+                }
+            }
+        }
+    }
+
+    /// Runs `body` on main and aux memory as they are (aux nil but on the
+    /// //e), for the display.
+    func withMemory<R>(_ body: (_ main: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>?) -> R) -> R {
+        guard isIIe else { return cpu.mem.withUnsafeBufferPointer { body($0.baseAddress!, nil) } }
+        syncBanks()
+        return banks.withUnsafeBufferPointer { body($0.baseAddress!, $0.baseAddress! + 0xC000) }
     }
 
     /// $C000-$C00F written on the //e: switch n/2 off (even) or on (odd).
@@ -404,12 +523,12 @@ public nonisolated final class Apple2Machine {
         case 1: s.ramRead = on
         case 2: s.ramWrite = on
         case 3: s.intCXROM = on
-        case 4: s.altZP = on                    // no aux memory: the zero page stays
+        case 4: s.altZP = on
         case 5: s.slotC3ROM = on
-        case 6: s.col80 = on
+        case 6: video.col80 = on
         default: video.altCharset = on
         }
-        setIIeSwitches(s)
+        if s != iie { setIIeSwitches(s) }
     }
 
     /// $C011-$C01F on the //e: a switch in bit 7, the last key below.
@@ -430,7 +549,7 @@ public nonisolated final class Apple2Machine {
         case 0xC: on = video.page2
         case 0xD: on = video.hires
         case 0xE: on = video.altCharset
-        default: on = iie.col80
+        default: on = video.col80
         }
         return (on ? 0x80 : 0) | keyboard.latch & 0x7F
     }
@@ -452,8 +571,10 @@ public nonisolated final class Apple2Machine {
             speakerClicks += 1
             clicks?.append(cpu.cycles)
         case 0x5:
-            // the //e's 80STORE: PAGE2 picks aux memory (not there), not the page shown
-            if !(iie.store80 && low & 0xE == 4) { video.set(low & 0xF) }
+            let was = video
+            video.set(low & 0xF)
+            // the //e's 80STORE: PAGE2 (and HIRES) pick the bank of the text and hi-res page 1
+            if iie.store80, video.page2 != was.page2 || video.hires != was.hires { mapAuxMemory() }
         case 0x6:
             switch low & 7 {
             case 1 ... 3: return gamePort.button((low & 7) - 1) ? 0x80 : 0
@@ -461,6 +582,7 @@ public nonisolated final class Apple2Machine {
             default: return 0                   // cassette in
             }
         case 0x7:
+            if isIIe && low == 0x7F && !write { return video.dhires ? 0x80 : 0 }   // RDDHIRES
             triggerPaddles(at: cpu.cycles)
         case 0x8:
             languageCard.access(low, write: write)
@@ -477,8 +599,10 @@ public nonisolated final class Apple2Machine {
 
     // MARK: inspecting
 
-    /// The 16K of the language card: $D000 bank 1, $D000 bank 2, $E000-$FFFF.
+    /// The 16K of the language card: $D000 bank 1, $D000 bank 2, $E000-$FFFF
+    /// (the //e's main bank, whatever ALTZP picks).
     public var languageCardRAM: [UInt8] {
+        if iie.altZP { return otherLanguageCardRAM }
         guard let bank2 = mappedBank2 else { return languageCard.ram }
         var ram = languageCard.ram
         ram.replaceSubrange(bank2 ? 0x1000 ..< 0x2000 : 0 ..< 0x1000, with: cpu.mem[0xD000 ..< 0xE000])
@@ -501,6 +625,14 @@ public nonisolated final class Apple2Machine {
 
     var languageCardState: String { languageCard.description }
 
+    /// The //e's switches that are on: "RAMWRT 80STORE INTCXROM".
+    var iieState: String {
+        let on = [("80STORE", iie.store80), ("RAMRD", iie.ramRead), ("RAMWRT", iie.ramWrite), ("ALTZP", iie.altZP),
+                  ("INTCXROM", iie.intCXROM), ("SLOTC3ROM", iie.slotC3ROM), ("PAGE2", video.page2),
+                  ("80COL", video.col80), ("DHIRES", video.dhires), ("ALTCHARSET", video.altCharset)]
+        return on.filter(\.1).map(\.0).joined(separator: " ")
+    }
+
     /// It has its model's ROM (else it's a host's machine, see above).
     public var hasROM: Bool { rom != nil }
 
@@ -508,13 +640,17 @@ public nonisolated final class Apple2Machine {
 
     /// Puts `memory` in main RAM ($0000-$BFFF; a 64K image's rest is left
     /// out) and `languageCard` (16K, as `languageCardRAM`) in the language
-    /// card's RAM; the switches stay.
+    /// card's RAM (the //e's main bank); the switches stay.
     public func load(memory: [UInt8], languageCard ram: [UInt8]) {
         precondition(memory.count >= 0xC000 && ram.count == 0x4000, "48K (or 64K) of main RAM and the card's 16K")
-        unmapLanguageCard()
-        cpu.mem.replaceSubrange(0 ..< 0xC000, with: memory[0 ..< 0xC000])
-        languageCard.ram = ram
-        mapLanguageCard()
+        writeMain(memory[0 ..< 0xC000], at: 0)
+        if iie.altZP {
+            otherLanguageCardRAM = ram
+        } else {
+            unmapLanguageCard()
+            languageCard.ram = ram
+            mapLanguageCard()
+        }
     }
 
     /// Puts `card` in `slot` (1-7, not the Disk II's 6), or takes the card
@@ -551,6 +687,10 @@ public nonisolated final class Apple2Machine {
         let c = Apple2Machine(model: model, rom: rom, diskROM: diskROM)
         c.cpu.mem = cpu.mem
         c.cpu.ioPages = cpu.ioPages
+        c.cpu.ioWritePages = cpu.ioWritePages
+        c.banks = banks
+        c.auxInMemory = auxInMemory
+        c.otherLanguageCardRAM = otherLanguageCardRAM
         (c.cpu.a, c.cpu.x, c.cpu.y, c.cpu.sp, c.cpu.p, c.cpu.pc, c.cpu.cycles) = (cpu.a, cpu.x, cpu.y, cpu.sp, cpu.p, cpu.pc, cpu.cycles)
         c.cpu.stopsAtBRK = cpu.stopsAtBRK
         c.languageCard = languageCard
@@ -611,9 +751,9 @@ public nonisolated final class Apple2Machine {
 
     // MARK: text on the screen
 
-    /// Fills text page 1 ($0400-$07FF) with spaces.
+    /// Fills text page 1 ($0400-$07FF, main memory) with spaces.
     public func cls() {
-        cpu.mem.replaceSubrange(0x400 ..< 0x800, with: repeatElement(0xA0, count: 0x400))
+        writeMain(repeatElement(0xA0, count: 0x400), at: 0x400)
     }
 
     /// Writes `text` on text page 1, row `y` (0-23) from column `x` (nil:
@@ -631,8 +771,7 @@ public nonisolated final class Apple2Machine {
         let column = max(x, 0)
         let count = min(bytes.count, 40 - column)
         guard count > 0 else { return }
-        let address = Screen.textAddress(row: y, page2: false) + column
-        cpu.mem.replaceSubrange(address ..< address + count, with: bytes.prefix(count))
+        writeMain(bytes.prefix(count), at: Screen.textAddress(row: y, page2: false) + column)
     }
 }
 
@@ -652,14 +791,29 @@ public nonisolated extension Apple2Card {
     func access(_ n: Int, write: Bool, value: UInt8, cycles: UInt64) -> UInt8 { 0 }
 }
 
-/// The display switches $C050-$C057 (and the //e's ALTCHARSET).
-public nonisolated struct VideoMode: Equatable, Sendable {
+/// The display switches $C050-$C057 (and the //e's ALTCHARSET, 80COL and
+/// DHIRES).
+public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertible {
     public var text = true
     public var mixed = false
+    /// PAGE2.  With the //e's 80STORE on it picks the bank of page 1 and page
+    /// 1 is shown (`Apple2Machine.displayMode`).
     public var page2 = false
     public var hires = false
     /// The //e's second character set: inverse lower case for flashing.
     public var altCharset = false
+    /// The //e's 80 columns ($C00D): 80-column text, and with `dhires` double
+    /// hi-res or double lo-res.
+    public var col80 = false
+    /// The //e's DHIRES (annunciator 3 off, $C05E; on $C05F).
+    public var dhires = false
+
+    /// What the screen shows: "Hi-res mixed", "80-column text", "Double hi-res".
+    public var description: String {
+        let graphics = (col80 && dhires ? "Double " : "") + (hires ? "hi-res" : "lo-res")
+        let name = text ? (col80 ? "80-column text" : "Text") : graphics.prefix(1).uppercased() + graphics.dropFirst()
+        return name + (mixed && !text ? " mixed" : "")
+    }
 
     mutating func set(_ n: Int) {
         switch n {
@@ -671,17 +825,19 @@ public nonisolated struct VideoMode: Equatable, Sendable {
         case 5: page2 = true
         case 6: hires = false
         case 7: hires = true
-        default: break                          // annunciators
+        case 0xE: dhires = true
+        case 0xF: dhires = false
+        default: break                          // the other annunciators
         }
     }
 }
 
 /// The //e's switches for memory and ROM ($C000-$C00B written, read at
-/// $C013-$C018).  The //e here has no aux memory: RAMRD reads nothing,
-/// RAMWRT writes nowhere, ALTZP and 80STORE change nothing.
-nonisolated struct IIeSwitches {
+/// $C013-$C018): which bank the CPU reads and writes (`Apple2Machine.banks(of:)`),
+/// which ROM is at $C100-$CFFF.
+nonisolated struct IIeSwitches: Equatable {
     var store80 = false, ramRead = false, ramWrite = false, altZP = false
-    var intCXROM = false, slotC3ROM = false, col80 = false
+    var intCXROM = false, slotC3ROM = false
     /// $C800-$CFFF is the internal ROM's (since $C3xx was read), until $CFFF.
     var intC8ROM = false
 }

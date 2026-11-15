@@ -153,9 +153,8 @@ public final class Apple2 {
         }
         let c = machine.cpu
         registers = "PC \(hex(c.pc, 4))  A \(hex(c.a))  X \(hex(c.x))  Y \(hex(c.y))  SP \(hex(c.sp))  P \(flags(c.p))"
-        let v = machine.video
-        videoMode = v.text ? "Text" : (v.hires ? "Hi-res" : "Lo-res") + (v.mixed ? " mixed" : "")
-        videoMode += v.page2 ? " · page 2" : ""
+        let v = machine.displayMode
+        videoMode = v.description + (v.page2 ? " · page 2" : "")
         if let sample = speedSample, time - sample.time >= 0.5 {
             speed = Double(c.cycles &- sample.cycles) / (time - sample.time) / 1_000_000
             speedSample = (time, c.cycles)
@@ -349,7 +348,7 @@ public final class Apple2 {
         }
         let start = Int(address)
         let count = min(bytes.count, max(0, 0xC000 - start))
-        machine.cpu.mem.replaceSubrange(start ..< start + count, with: bytes.prefix(count))
+        machine.writeMain(bytes.prefix(count), at: start)
         if run {
             resume()
             let monitor: UInt16 = 0xFF69 - 1        // RTS adds 1

@@ -9,7 +9,7 @@ import MOS6502
 @main
 struct Headless {
     static let usage = """
-    usage: headless.sh [--roms DIR] [--model plus|ii|e] ACTION...
+    usage: headless.sh [--roms DIR] [--model plus|ii|e|ee] ACTION...
       --roms DIR                   the ROMs (default $APPLE2_ROMS, else ../roms)
       --disk PATH / --disk2 PATH   insert a disk image in drive 1 / 2
       --eject / --eject2           take it out
@@ -41,7 +41,8 @@ struct Headless {
             if first == "--roms" { romDir = URL(fileURLWithPath: value) }
             else if value == "ii" { model = .apple2 }
             else if value == "e" { model = .apple2e }
-            else if value != "plus" { fail("--model plus|ii|e") }
+            else if value == "ee" { model = .apple2eEnhanced }
+            else if value != "plus" { fail("--model plus|ii|e|ee") }
         }
         let machine: Apple2Machine
         do { machine = try ROMs.machine(model, roms: .directory(romDir)) } catch { fail("\(error.localizedDescription)") }
@@ -147,16 +148,18 @@ struct Headless {
     }
 
     static func printScreen(_ m: Apple2Machine) {
-        let line = "+" + String(repeating: "-", count: 40) + "+"
+        let rows = m.screenText().split(separator: "\n", omittingEmptySubsequences: false)
+        let line = "+" + String(repeating: "-", count: rows.first?.count ?? 40) + "+"
         print(line)
-        for row in m.screenText().split(separator: "\n", omittingEmptySubsequences: false) { print("|\(row)|") }
+        for row in rows { print("|\(row)|") }
         print(line)
     }
 
     static func printStatus(_ m: Apple2Machine) {
-        let c = m.cpu, v = m.video
+        let c = m.cpu, v = m.displayMode
         print("PC=\(hex(c.pc, 4)) A=\(hex(c.a)) X=\(hex(c.x)) Y=\(hex(c.y)) SP=\(hex(c.sp)) P=\(hex(c.p)) cycles=\(c.cycles)")
-        print("video: \(v.text ? "text" : v.hires ? "hires" : "lores")\(v.mixed ? " mixed" : "") page \(v.page2 ? 2 : 1); \(m.languageCardState); speaker clicks \(m.speakerClicks)")
+        print("video: \(v) page \(v.page2 ? 2 : 1); \(m.languageCardState); speaker clicks \(m.speakerClicks)")
+        if m.model.isIIe { print("//e: \(m.iieState)") }
         for (i, d) in m.disk.drives.enumerated() {
             print("drive \(i + 1): \(d.image?.name ?? "empty") track \(d.track) (half \(d.halfTrack))\(m.disk.selected == i && m.disk.motorOn(at: c.cycles) ? " motor on" : "")")
         }
