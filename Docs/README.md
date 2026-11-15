@@ -12,7 +12,7 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
 | [../README.md](../README.md) | using the package: the model, the view, an example |
 | [Hardware.md](Hardware.md) | the machine as emulated: memory map, ROMs, soft switches, language card, keyboard, game I/O, the display's memory and character codes |
 | [DiskII.md](DiskII.md) | the Disk II: switches, stepper, the nibble track, 6‑and‑2, sector orders, image formats, the timing model and why, writing |
-| [Emulator.md](Emulator.md) | the code: files, the MOS6502 package, the run loop, sound, inputs, binaries, the headless runner, how to add things (MouseText, `.woz`) |
+| [Emulator.md](Emulator.md) | the code: files, the MOS6502 package, the run loop, sound, inputs, binaries, the headless runner, how to add things (MouseText, bit‑level timing) |
 | [Natives.md](Natives.md) | a program's memory by name, for a host that runs Swift in place of some of its 6502 code: symbol maps (one a build of the program), fingerprints of a routine's code, `RAM`, symbol files for the debugger |
 | [../Data/README.md](../Data/README.md) | the scripts: headless runner, disk catalog/extract/list, disassembler, hex dump, hi‑res to PNG, the font |
 | [charset.png](charset.png) | the text font (`Charset.swift`) |
@@ -25,7 +25,8 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   128K (an extended 80‑column card: aux memory, 80 columns), lower case,
   its firmware (Hardware.md, *The //e*).
 * **Disk II** in slot 6, two drives, nibble level: `.dsk`/`.do`/`.po` (sector
-  order detected) and `.nib`. Reading and writing work. Written disks stay in
+  order detected), `.nib` and `.woz` (WOZ 1 and 2, read through the latch
+  into nibbles; saved as WOZ2). Reading and writing work. Written disks stay in
   memory until saved (`diskFileData(drive:)`). The motor keeps spinning for
   1 s after it is switched off, as on the real card.
 * **Binaries:** `load(url/bytes, at:, run:)` puts a file (as `Data/dsk.py
@@ -59,12 +60,13 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   its fingerprint, and the names as a symbol file for AppleWin's and
   Mariani's debugger. Hooks: Swift where the CPU reaches an address,
   switched on and off by name, the trap bits theirs.
-* **Not there yet:** joystick, the enhanced //e's MouseText, `.woz`,
+* **Not there yet:** joystick, the enhanced //e's MouseText, bit‑level disk timing,
   13‑sector disks, game controllers. iOS, tvOS, watchOS and visionOS build, but have only
   been tried in an app on the Mac so far.
 
 Tested (headless, `swift test`, and in an app): DOS 3.3 master (boot,
-`CATALOG`, `SAVE` then reboot and `LOAD`, also as `.po` and `.nib`),
+`CATALOG`, `SAVE` then reboot and `LOAD`, also as `.po`, `.nib` and `.woz`),
+copy‑protected `.woz` originals (custom loaders, 18‑sector tracks),
 several boot disks with their own loader; a binary extracted from a disk
 (`dsk.py extract` → `load`, on all of them). The //e: Applesoft, DOS 3.3
 `CATALOG`, a boot disk; both //e's: `PR#3` (80 columns), a 128K double

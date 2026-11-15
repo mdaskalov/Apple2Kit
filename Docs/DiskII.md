@@ -32,10 +32,19 @@ each nibble as `STA $C08D,X` / `ORA $C08C,X`, 32 cycles apart.
 
 A track is two half tracks. Half track h sits under magnet h mod 4. When a
 magnet next to it is on (h + 1 or h − 1 mod 4), the head moves half a track
-towards it, once per switch access (`step`). The range is 0‑69 (tracks
-0‑34). The boot ROM steps 80 times outwards to find track 0 (the "grinding",
-about 1.5 s). Odd half tracks read as the track below; there is no
-half‑track data.
+towards it, once per switch access (`step`). The range is 0‑79 (tracks
+0‑39). The boot ROM steps 80 times outwards to find track 0 (the "grinding",
+about 1.5 s).
+
+What the head reads at half track h is the image's track at quarter track
+2h (`DiskImage.trackMap`, `track(atHalfTrack:)`). A `.dsk`/`.nib` track t
+is at quarter tracks 4t‑4t+3, so odd half tracks read as the track below,
+and tracks 35‑39 are unformatted. A `.woz` has its own map (TMAP): usually
+track t at 4t‑1‑4t+1, so odd half tracks are unformatted there, as on a
+real disk, and half tracks or extra tracks a protection uses are where the
+file puts them. An unformatted track reads as noise
+(`DiskImage.unformatted`); writing there makes a track, which the quarter
+tracks either side see too.
 
 When the track changes, the head stays at the same fraction of the way
 round, which only matters for `.nib` tracks of different lengths.
@@ -106,7 +115,19 @@ k of a track is ProDOS sectors 2k and 2k+1 (physical
 |---|---|---|
 | `.dsk`, `.do`, `.po` | 143360 (35 × 16 × 256) | nibblized as above |
 | `.nib` | 232960 (35 × 6656) | the nibbles as they are (copy protection in the nibbles survives) |
-| `.woz`, `.d13`, `.2mg`, hard disks | | not yet |
+| `.woz` | any (WOZ1/WOZ2 header) | each track's bits read into nibbles through the latch (below), the file's quarter‑track map and write protection |
+| `.d13`, `.2mg`, hard disks | | not yet |
+
+**`.woz`** (`WOZ.swift`, WOZ 1 and 2, 5.25" only; FLUX tracks and the
+CRC are not read). A track is its bits as the drive sees them, about 51000.
+They become nibbles as the card's latch makes them (`WOZ.nibbles`): bits
+shift in, a byte is done when bit 7 is set, and the next byte starts at the
+next 1 bit, so the 0s after a 10‑bit self‑sync FF are skipped and the latch
+falls into step on a run of them, wherever the track's bits start. One turn
+is read to fall into step, the next turn is the track. A track with no
+bytes in it is unformatted. Copy protection in the nibbles (custom address
+marks, 18‑sector tracks, half tracks, nibble counts) survives; what lives
+between the nibbles (sync byte lengths, weak bits) does not (*Timing*).
 
 ## Timing: how fast the disk turns
 
@@ -138,7 +159,8 @@ never missing one. Code that waits sees the disk move on. Both matter:
 
 Code that counts cycles between nibbles (some copy protection, nibble
 counting, "E7 bitstreams") can fail.
-That needs bit‑level timing and `.woz` images.
+That needs bit‑level timing: `.woz` images have the bits, but they are
+read as nibbles.
 
 ## Writing
 
@@ -148,6 +170,13 @@ dirty tracks: it finds every address field of the right track with a good
 checksum and the first data field after it (within 64 nibbles) that
 decodes, then stores the sectors back in the image's order. Sectors that
 don't decode keep their old data. `.nib` images are saved as the nibbles.
+`.woz` images are saved as WOZ2 (a WOZ1 file too: its fixed 6646‑byte
+tracks have no room for a written one): tracks not written keep their bits
+as they were, written ones are their nibbles as bits, each FF as a 10‑bit
+self‑sync byte. INFO and META are kept, the TMAP is the image's (with
+tracks written where there were none), WRIT and FLUX are dropped, and the
+CRC is written. A `.woz` whose INFO says write protected stays so: DOS says
+`WRITE PROTECTED`.
 
 DOS 3.3's `SAVE` checked: boot, save a program, save the image, boot it,
 `LOAD` and `RUN`. The VTOC bitmap, catalog, T/S list and data sector were

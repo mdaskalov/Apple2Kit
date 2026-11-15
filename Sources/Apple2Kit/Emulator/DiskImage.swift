@@ -1,7 +1,8 @@
 import Foundation
 
-/// A 5.25" disk as the Disk II reads it: 35 tracks of nibbles (the bytes on
-/// the disk's surface, high bit set), made from an image file.
+/// A 5.25" disk as the Disk II reads it: tracks of nibbles (the bytes on
+/// the disk's surface, high bit set), made from an image file, and which
+/// track the head finds at each quarter track.
 ///
 /// * `.dsk`, `.do`, `.po`: 140K of sector data (35 tracks × 16 sectors × 256
 ///   bytes), in DOS 3.3 order (`.do`, `.dsk` usually) or ProDOS order (`.po`,
@@ -9,11 +10,17 @@ import Foundation
 ///   formats it: 16 sectors, 6-and-2 encoded, volume 254.
 /// * `.nib`: 35 tracks of 6656 nibbles as they are on the disk, taken as they
 ///   are (copy protection that lives in the nibbles survives).
+/// * `.woz` (WOZ 1 and 2): the bits of each track, read into nibbles as the
+///   Disk II's latch reads them (`WOZ`), with the file's map of quarter
+///   tracks: half tracks, tracks 35-39, unformatted tracks, its
+///   write protection.
 ///
 /// What the Disk II writes goes into the nibble tracks; `fileData()` decodes
 /// them back into the image's own format (Docs/DiskII.md).
 public nonisolated struct DiskImage {
-    static let tracks = 35
+    static let tracks = 35                                 // of a .dsk/.nib
+    static let maxTracks = 40                              // the head's range, a .woz's
+    static let quarterTracks = maxTracks * 4               // 160
     static let sectors = 16
     static let sectorSize = 256
     static let trackSize = sectors * sectorSize            // 4096
@@ -26,6 +33,7 @@ public nonisolated struct DiskImage {
         case dos = "DOS order"
         case prodos = "ProDOS order"
         case nib = "Nibbles"
+        case woz = "WOZ"
     }
 
     public enum ImageError: LocalizedError {
@@ -34,24 +42,45 @@ public nonisolated struct DiskImage {
         public var errorDescription: String? {
             switch self {
             case .badSize(let name, let size):
-                "\(name) is \(size) bytes: not a 140K .dsk/.do/.po (143360) or a .nib (232960) image."
+                "\(name) is \(size) bytes: not a 140K .dsk/.do/.po (143360), a .nib (232960) or a .woz image."
             }
         }
     }
 
     let name: String
     let format: Format
-    /// The nibbles of each track.
+    /// The disk is write protected (a `.woz` says so).
+    public let isWriteProtected: Bool
+    /// The nibbles of each track on the disk (`trackMap` says where they are).
     private(set) var nibbles: [[UInt8]]
-    /// Tracks written since the image was made or saved.
+    /// By quarter track (0-159): the index in `nibbles` of the track the head
+    /// reads there, nil: none (unformatted).  A `.dsk`/`.nib` track t is at
+    /// quarter tracks 4t to 4t+3 (odd half tracks read as the track below).
+    private(set) var trackMap: [Int?]
+    /// Tracks (`nibbles` indices) written since the image was made or saved.
     private(set) var dirtyTracks = Set<Int>()
-    /// The sector data the image was made from (empty for `.nib`): sectors
-    /// that can't be decoded from a written track keep theirs.
+    /// The sector data the image was made from (empty for `.nib`, `.woz`):
+    /// sectors that can't be decoded from a written track keep theirs.
     private var sectorData: [UInt8]
+    /// The `.woz` file: its tracks' bits as they were read or last saved.
+    private var woz: WOZ?
 
     public init(name: String, data: [UInt8]) throws {
         self.name = name
         let ext = (name as NSString).pathExtension.lowercased()
+        sectorData = []
+        if WOZ.isWOZ(data) {
+            let woz = try WOZ(data)
+            format = .woz
+            isWriteProtected = woz.isWriteProtected
+            nibbles = woz.tracks.map { WOZ.nibbles(bits: $0.bytes, count: $0.count) }
+            let readable = nibbles.map { !$0.isEmpty }
+            trackMap = woz.map.map { $0 == WOZ.noTrack || !readable[Int($0)] ? nil : Int($0) }
+            self.woz = woz
+            return
+        }
+        isWriteProtected = false
+        trackMap = (0 ..< DiskImage.quarterTracks).map { $0 / 4 < DiskImage.tracks ? $0 / 4 : nil }
         switch data.count {
         case DiskImage.sectorImageSize:
             format = ext == "po" ? .prodos : ext == "do" ? .dos : SectorOrder.detect(data)
@@ -60,7 +89,6 @@ public nonisolated struct DiskImage {
             nibbles = (0 ..< DiskImage.tracks).map { DiskImage.nibblize(track: $0, of: data, order: order) }
         case DiskImage.nibImageSize:
             format = .nib
-            sectorData = []
             nibbles = (0 ..< DiskImage.tracks).map {
                 Array(data[$0 * DiskImage.nibblesPerTrack ..< ($0 + 1) * DiskImage.nibblesPerTrack])
             }
@@ -71,25 +99,68 @@ public nonisolated struct DiskImage {
 
     public var isModified: Bool { !dirtyTracks.isEmpty }
 
-    /// Writes `value` at nibble `position` of `track` (the Disk II writing).
-    mutating func write(_ value: UInt8, track: Int, position: Int) {
-        nibbles[track][position] = value
-        dirtyTracks.insert(track)
+    /// The nibbles under the head at half track `halfTrack` (0-79): the
+    /// track there, else an unformatted one (`unformatted`).
+    func track(atHalfTrack halfTrack: Int) -> [UInt8] {
+        trackMap[2 * halfTrack].map { nibbles[$0] } ?? DiskImage.unformatted
     }
 
-    /// The image in its file's format, with what was written: the nibble
-    /// tracks as they are for `.nib`, else the sectors decoded from them.
-    public mutating func fileData() -> [UInt8] {
-        defer { dirtyTracks = [] }
-        if format == .nib { return nibbles.flatMap { $0 } }
-        let order = format == .prodos ? SectorOrder.prodos : SectorOrder.dos
-        for track in dirtyTracks.sorted() {
-            for (physical, bytes) in DiskImage.denibblize(nibbles[track], track: track) {
-                let offset = track * DiskImage.trackSize + Int(order.imageSector[physical]) * DiskImage.sectorSize
-                sectorData.replaceSubrange(offset ..< offset + DiskImage.sectorSize, with: bytes)
+    /// Writes `value` at nibble `position` of the track at half track
+    /// `halfTrack` (the Disk II writing).  Where there is no track, the head
+    /// makes one, which its neighbouring quarter tracks see too (as WOZ has it).
+    mutating func write(_ value: UInt8, halfTrack: Int, position: Int) {
+        let q = 2 * halfTrack
+        let index: Int
+        if let i = trackMap[q] {
+            index = i
+        } else {
+            index = nibbles.count
+            nibbles.append(DiskImage.unformatted)
+            for n in max(0, q - 1) ... min(DiskImage.quarterTracks - 1, q + 1) where trackMap[n] == nil {
+                trackMap[n] = index
             }
         }
-        return sectorData
+        nibbles[index][position % nibbles[index].count] = value
+        dirtyTracks.insert(index)
+    }
+
+    /// What the head reads where there is no track: noise, the same each
+    /// time (a real drive's amplifier makes up bits from nothing).
+    static let unformatted: [UInt8] = {
+        var seed: UInt32 = 1
+        return (0 ..< 6400).map { _ in
+            seed = seed &* 1_103_515_245 &+ 12345
+            return UInt8(truncatingIfNeeded: seed >> 16) | 0x80
+        }
+    }()
+
+    /// The image in its file's format, with what was written: the nibble
+    /// tracks as they are for `.nib`, written tracks as bits for `.woz`
+    /// (saved as WOZ2), else the sectors decoded from them.
+    public mutating func fileData() -> [UInt8] {
+        defer { dirtyTracks = [] }
+        switch format {
+        case .nib:
+            return nibbles.prefix(DiskImage.tracks).flatMap { $0 }
+        case .woz:
+            guard var woz else { return [] }
+            for index in dirtyTracks.sorted() {
+                let bits = WOZ.bits(nibbles: nibbles[index])
+                if index < woz.tracks.count { woz.tracks[index] = bits } else { woz.tracks.append(bits) }
+            }
+            woz.map = trackMap.map { i in i.flatMap { $0 < WOZ.quarterTracks ? UInt8($0) : nil } ?? WOZ.noTrack }
+            self.woz = woz
+            return woz.fileData()
+        case .dos, .prodos:
+            let order = format == .prodos ? SectorOrder.prodos : SectorOrder.dos
+            for track in dirtyTracks.sorted() where track < DiskImage.tracks {
+                for (physical, bytes) in DiskImage.denibblize(nibbles[track], track: track) {
+                    let offset = track * DiskImage.trackSize + Int(order.imageSector[physical]) * DiskImage.sectorSize
+                    sectorData.replaceSubrange(offset ..< offset + DiskImage.sectorSize, with: bytes)
+                }
+            }
+            return sectorData
+        }
     }
 
     // MARK: 6-and-2 encoding

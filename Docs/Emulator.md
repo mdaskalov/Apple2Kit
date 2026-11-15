@@ -10,7 +10,8 @@ Sources/Apple2Kit/
     GamePort.swift      the paddle timers, push buttons and joystick
     MouseCard.swift     the AppleMouse II in slot 4: ROM page, firmware routines, interrupts
     DiskII.swift        the Disk II controller and drives (switches, stepper, latch, timing)
-    DiskImage.swift     image files ⇄ nibble tracks: 6-and-2, sector orders, writing back
+    DiskImage.swift     image files ⇄ nibble tracks: 6-and-2, sector orders, the quarter-track map, writing back
+    WOZ.swift           .woz files: chunks, the track bits ⇄ nibbles (the latch), WOZ2 writing, CRC-32
     Screen.swift        the display from memory: text (40, 80 columns), lo-res, hi-res (3 styles), double lo-res
                         and hi-res, mixed → 560 × 192 RGBA;
                         a HiresScreen as an image (560 × 384) or a thumbnail (280 × 192)
@@ -243,9 +244,11 @@ some programs (menus, windows) draw with them.
 **Delete as $7F** on the //e (the Mac's delete key is ← now, $08, as most
 programs want for backspace).
 
-**`.woz` images.** They carry the bits of each track with their timing, for
-copy‑protected originals. Replace the nibble array with a bit stream and
-move the latch on by elapsed cycles / 4 bits.
+**Bit‑level disk timing.** `.woz` tracks are read into nibbles once
+(`WOZ.nibbles`), which loses what lives between them: how long each sync
+byte is, weak (random) bits. Protection that times nibbles or reads weak
+bits needs the drive to keep the bit stream and move the latch on by
+elapsed cycles / 4 bits.
 
 **13‑sector disks** (DOS 3.2, `.d13`). These use 5‑and‑3 encoding and need
 the 13‑sector boot ROM.

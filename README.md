@@ -3,7 +3,7 @@
 An Apple ][ / ][+ / //e / enhanced //e emulator as a Swift package, for
 SwiftUI apps on macOS 14, iOS/iPadOS 17, tvOS 17, watchOS 10 and visionOS 1
 or later: 48K + language card (the //e: 128K, an extended 80‑column card),
-Disk II (`.dsk`, `.do`, `.po`, `.nib`, read and write), text (40 and 80
+Disk II (`.dsk`, `.do`, `.po`, `.nib`, `.woz`, read and write), text (40 and 80
 columns), lo‑res, hi‑res, double lo‑res and double hi‑res, the speaker, the
 keyboard. The CPU is the `MOS6502` package
 ([github.com/mdaskalov/MOS6502](https://github.com/mdaskalov/MOS6502),

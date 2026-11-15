@@ -86,7 +86,7 @@ public final class Apple2 {
     @ObservationIgnored private let soundPlayer = SoundPlayer()
 
     /// The disk image files it takes.
-    public static let diskTypes = ["dsk", "do", "po", "nib"].compactMap { UTType(filenameExtension: $0) }
+    public static let diskTypes = ["dsk", "do", "po", "nib", "woz"].compactMap { UTType(filenameExtension: $0) }
 
     /// Where the ROMs come from (`ROMs.Source`).
     public let roms: ROMs.Source

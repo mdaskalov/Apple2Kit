@@ -15,7 +15,7 @@
 public nonisolated final class DiskII {
     public final class Drive {
         public internal(set) var image: DiskImage?
-        /// The head, in half tracks (0-69).
+        /// The head, in half tracks (0-79).
         var halfTrack = 0
         /// The stepper motor's four magnets (bit n = phase n on).
         var phases: UInt8 = 0
@@ -122,7 +122,7 @@ public nonisolated final class DiskII {
             latchRead = false
             return latch & 0x7F
         }
-        let nibbles = image.nibbles[min(d.track, DiskImage.tracks - 1)]
+        let nibbles = image.track(atHalfTrack: d.halfTrack)
         if elapsed >= 2 * DiskII.cyclesPerNibble {
             d.position += Int(min(elapsed / DiskII.cyclesPerNibble, UInt64(nibbles.count))) - 1
         }
@@ -139,9 +139,8 @@ public nonisolated final class DiskII {
         let d = drive
         guard motorOn, d.image != nil else { return latch }
         // no local copy of the image: the write would copy the track
-        let track = min(d.track, DiskImage.tracks - 1)
-        d.position %= d.image!.nibbles[track].count
-        if !d.writeProtected { d.image!.write(latch, track: track, position: d.position) }
+        d.position %= d.image!.track(atHalfTrack: d.halfTrack).count
+        if !d.writeProtected { d.image!.write(latch, halfTrack: d.halfTrack, position: d.position) }
         d.position += 1
         latchCycle = now
         latchRead = false
@@ -159,12 +158,12 @@ public nonisolated final class DiskII {
         if d.phases & 1 << ((at + 1) & 3) != 0 { move += 1 }
         if d.phases & 1 << ((at + 3) & 3) != 0 { move -= 1 }
         guard move != 0 else { return }
-        let track = d.track
-        d.halfTrack = max(0, min(2 * (DiskImage.tracks - 1) + 1, d.halfTrack + move))
-        if d.track != track, let image = d.image {
+        let from = d.halfTrack
+        d.halfTrack = max(0, min(2 * DiskImage.maxTracks - 1, d.halfTrack + move))
+        if d.halfTrack != from, let image = d.image {
             // keep the angle: the same fraction of the way round the new track
-            let old = image.nibbles[min(track, DiskImage.tracks - 1)].count
-            let new = image.nibbles[min(d.track, DiskImage.tracks - 1)].count
+            let old = image.track(atHalfTrack: from).count
+            let new = image.track(atHalfTrack: d.halfTrack).count
             if old != new { d.position = d.position * new / max(old, 1) }
         }
     }
@@ -174,6 +173,7 @@ public nonisolated final class DiskII {
     public func insert(_ image: DiskImage, drive n: Int) {
         drives[n].image = image
         drives[n].position = 0
+        drives[n].writeProtected = image.isWriteProtected
     }
 
     /// Takes the disk out of drive `n` and returns it.
