@@ -173,7 +173,7 @@ emulated (AppleWin runs Apple's firmware): its ROM page has what programs
 look for – the Pascal firmware's bytes ($Cn05 $38, $Cn07 $18, $Cn0B $01),
 the mouse's ID ($Cn0C $20, $CnFB $D6), the firmware's table at $Cn12‑$Cn19 –
 and an RTS at each routine ($Cn80 on), where the machine runs it (a trap of
-the CPU's, before the host's `onTrap`) and returns, the carry clear (set:
+the CPU's, before the hooks) and returns, the carry clear (set:
 failed).
 
 | Routine | Does |

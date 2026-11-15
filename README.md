@@ -93,6 +93,18 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   soft switches of $C000‑$C0FF over; `copy()` makes an independent machine.
   The language card's RAM, while read and written, lies in `cpu.mem` at
   $D000‑$FFFF (`languageCardRAM` has all 16K, `languageCardBank` the bank).
+* A program's memory by name, for a host that runs Swift in place of some
+  of its 6502 code (`Sources/Apple2Kit/Natives`,
+  [Docs/Natives.md](Docs/Natives.md)): a `SymbolMap` holds its variables,
+  tables and routines (`Byte`, `Word`, `Table`, `Routine`, each with its
+  address, a routine with the fingerprint of its code), `RAM` is the CPU's
+  memory by those names (`cpu.withRAM(Symbols.map) { m in m.lives &-= 1 }`),
+  and `SymbolFile` writes them for AppleWin's and Mariani's debugger.
+* Hooks (Docs/Natives.md, *Hooks and switches*): `addHook(at:name:)` runs
+  Swift where the CPU reaches an address, in place of the instruction or
+  before it, `addObserver` looks there; `switchedOff` turns hooks off by
+  name (the CPU then doesn't stop there); `host` lets them find the app's
+  own object.
 * A binary is the file's bytes alone, as `Data/dsk.py extract` writes it;
   `load` jumps to it as `BRUN` does (RTS: the monitor's `*`).
   Without an address, `load` takes it from the name (`NAME#06XXXX.bin`, which
@@ -146,7 +158,8 @@ struct ContentView: View {
 ```
 
 `swift test` runs the tests (Applesoft, a binary loaded and run, the
-language card, a machine without ROMs, cards and the I/O hook, `print`;
+language card, a machine without ROMs, cards and the I/O hook, `print`,
+symbols and memory by name;
 the ones that need ROMs are skipped without them, below).
 
 * [Docs](Docs/README.md): the machine, the Disk II, the code, status, next steps.

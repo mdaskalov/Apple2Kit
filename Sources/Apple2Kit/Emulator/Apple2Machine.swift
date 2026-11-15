@@ -94,14 +94,26 @@ public nonisolated final class Apple2Machine {
             guard mouseEnabled != oldValue else { return }
             if mouseEnabled { resetMouse() }
             putROMPage(MouseCard.slot)
-            for call in MouseCard.Call.allCases { cpu.traps[Int(call.entry)] = mouseEnabled }
+            for call in MouseCard.Call.allCases { refreshTrap(call.entry) }
         }
     }
     /// How many vertical blanks have begun (`step`, for the mouse card's interrupt).
     private var verticalBlanks: UInt64 = 0
-    /// The host's traps (`CPU6502.traps`): asked where the CPU reaches one
-    /// that isn't the machine's own (the mouse card's firmware); true: it
-    /// handled the instruction there.
+    /// The hooks (`addHook`, Hooks.swift): Swift where the CPU reaches an
+    /// address, each with a switch if it has a name.
+    var hooks = Hooks()
+    /// The host's object, for its hooks: a host keeping its own state with
+    /// the machine (its devices, what its natives found) sets itself here,
+    /// and its hooks find it (`machine.host as? MyHost`).  Not copied: a
+    /// host's copy sets itself on the machine's copy.  Not kept either: the
+    /// host keeps the machine, and must outlive it or set this to nil.  (A
+    /// weak reference would move the host's reference counts to a side
+    /// table and make each retain of it several times slower.)
+    public unowned(unsafe) var host: AnyObject?
+    /// The host's traps it sets itself (`CPU6502.traps`), asked where the
+    /// CPU reaches one that no hook took: true, it handled the instruction
+    /// there.  A hook put in or taken out at the same address sets the trap
+    /// as the hooks need it.
     public var onTrap: ((UInt16) -> Bool)?
     /// Speaker clicks ($C030) so far.
     private(set) var speakerClicks = 0
@@ -128,7 +140,7 @@ public nonisolated final class Apple2Machine {
         for page in 0xC0 ... 0xFF { cpu.ioPages[page] = true }
         cpu.ioRead = { [unowned self] in read($0) }
         cpu.ioWrite = { [unowned self] in write($0, $1) }
-        cpu.onTrap = { [unowned self] pc in runMouseFirmware(at: pc) || onTrap?(pc) == true }
+        cpu.onTrap = { [unowned self] pc in runMouseFirmware(at: pc) || runHooks(at: pc) || onTrap?(pc) == true }
         powerOn()
     }
 
@@ -531,10 +543,10 @@ public nonisolated final class Apple2Machine {
     }
 
     /// An independent machine in the same state: memory, the switches, the
-    /// devices, the drives and their disks, the CPU's registers and cycles.
-    /// The cards are the same (a card keeps its own state); the host's
-    /// `ioHook` and `onTrap`, and the CPU's traps and watches but the mouse
-    /// card's, aren't copied.
+    /// devices, the drives and their disks, the CPU's registers and cycles,
+    /// the hooks and their switches.  The cards are the same (a card keeps
+    /// its own state); the host's `ioHook`, `onTrap` and `host`, and the
+    /// CPU's traps it set itself and its watches, aren't copied.
     public func copy() -> Apple2Machine {
         let c = Apple2Machine(model: model, rom: rom, diskROM: diskROM)
         c.cpu.mem = cpu.mem
@@ -553,6 +565,8 @@ public nonisolated final class Apple2Machine {
         c.gamePort = gamePort
         c.mouseEnabled = mouseEnabled           // first: putting the card in resets it
         c.mouse = mouse
+        c.hooks = hooks
+        for address in hooks.active.keys { c.refreshTrap(address) }
         c.verticalBlanks = verticalBlanks
         c.speakerClicks = speakerClicks
         c.clicks = clicks
