@@ -50,8 +50,9 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   Platforms). `type(_:)` types text. Left/right ⌥
   are push buttons 0/1. The paddles sit in the middle (128).
 * **Sound:** the speaker, rendered to the cycle (`SpeakerRenderer`);
-  `sound` mutes it. *Fast Disk* (`fastDisk`) doesn't run ahead of the
-  clock while the speaker sounds.
+  `sound` mutes it, `volume` (0–1, default 0.5) sets its loudness.
+  *Fast Disk* (`fastDisk`) doesn't run ahead of the clock while the
+  speaker sounds.
 * **Symbols** (2026‑11‑14, Natives.md): a program's variables, tables and
   routines by name in a `SymbolMap`, the CPU's memory by those names for
   Swift that stands in for 6502 code (`RAM`), a routine's code checked by

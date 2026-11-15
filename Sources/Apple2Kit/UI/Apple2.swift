@@ -46,6 +46,13 @@ public final class Apple2 {
     public var sound = true {
         didSet { if sound != oldValue { soundPlayer.stop() } }
     }
+    /// The speaker's loudness, 0 (silent) to 1 (the full swing of its
+    /// clicks); by default half of it, the full swing being harsh.
+    public var volume = Apple2.defaultVolume {
+        didSet { soundPlayer.volume = Float(volume) }
+    }
+    /// What `volume` starts at.
+    public static let defaultVolume = 0.5
     /// Run as fast as it goes while a disk drive's motor is on.
     public var fastDisk = true
     /// A mouse card in slot 4 (`Apple2Machine.mouseEnabled`); kept when
@@ -53,6 +60,11 @@ public final class Apple2 {
     public var mouse = false {
         didSet { machine.mouseEnabled = mouse }
     }
+    /// A joystick in the game port: a game controller's, or one let go in
+    /// the middle while none is connected.  Off: nothing plugged in – a
+    /// program reads the paddles as all the way right and down, and a game
+    /// controller is left alone.
+    public var joystick = true
     public private(set) var paused = false
     /// Why the machine stopped, or a file that couldn't be opened.
     public var message: String?
@@ -86,6 +98,7 @@ public final class Apple2 {
     public init(model: Model = .apple2Plus, roms: ROMs.Source = .bundle) {
         self.model = model
         self.roms = roms
+        soundPlayer.volume = Float(Self.defaultVolume)
         do {
             machine = try ROMs.machine(model, roms: roms)
             machine.clicks = []
@@ -101,7 +114,7 @@ public final class Apple2 {
     /// second is caught up; with `fastDisk` it may run on ahead (`runAhead`).
     func frame(at time: CFTimeInterval, style: Screen.Style) -> CGImage? {
         defer { lastFrame = time }
-        let controller = machine.readGameController(playing: !paused)
+        let controller = machine.readGameController(playing: !paused, plugged: joystick)
         if controller != controllerName { controllerName = controller }
         if !paused, let last = lastFrame {
             owed += min(max(time - last, 0), 0.1) * Apple2.clock

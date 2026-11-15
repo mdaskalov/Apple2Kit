@@ -39,6 +39,11 @@ public final class SoundPlayer {
     /// within the last `SpeakerStream.hold`.
     public var isSounding: Bool { stream.isPlaying }
 
+    /// The loudness, 0 (silent) to 1 (the speaker's full swing).
+    public var volume: Float = 1 {
+        didSet { node.volume = max(0, min(1, volume)) }
+    }
+
     /// Takes the speaker's `clicks` up to cycle `now`; plays them unless
     /// `muted`.  `quiet`: nothing clicks for a while after `now` (paused):
     /// the sound ends there, the cone settling.  A new stretch plays at

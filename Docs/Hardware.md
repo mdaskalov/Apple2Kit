@@ -161,9 +161,11 @@ push buttons (`buttons`: the host's keys) and a two‑axis joystick
 * A game controller is the joystick (`GameControllers`, UI): the left stick
   or the d‑pad, its round gate stretched to the square one, a fifth of the
   way out the middle; A/X button 0, B/Y button 1. `Apple2` reads it every
-  frame (`readGameController`): the joystick is plugged in once a
-  controller connects, and stays in, let go, when it goes – a program reads
-  one unplugged as all the way right and down.
+  frame (`readGameController`). `Apple2.joystick` (on by default) plugs a
+  joystick in: the controller's, or one let go in the middle while none is
+  connected. Off, nothing is plugged in: a program reads the paddles as all
+  the way right and down (some games take that for a joystick held right,
+  others for no joystick and use the keys), and a controller is ignored.
 
 A host's own routine reads them at a cycle of its own: `triggerPaddles(at:)`,
 `paddleRunning(_:at:)`, `readKeyboard(at:)`, `clearKeyStrobe(at:)`.
@@ -215,11 +217,11 @@ dots a pixel, shown twice as high (560:384). Text and lo‑res use two dots a
 pixel. Hi‑res needs the dots, because a byte with the palette bit set is
 shown half a pixel to the right. Three styles (`Screen.Style`, `Apple2View`'s `style`):
 
-| Style | Hi‑res | Text, lo‑res |
-|---|---|---|
-| Color | colours with dark gaps, the half‑pixel shift | white text, 16 colours |
-| Color Filled | colours filled in, no shift | white text, 16 colours |
-| Mono | green dots, the half‑pixel shift | green |
+| Style | Hi‑res | Double hi‑res | Text, lo‑res |
+|---|---|---|---|
+| Color | colours with dark gaps, the half‑pixel shift | a colour a dot, dark gaps, fringes | white text, 16 colours |
+| Color Filled | colours filled in, no shift | 140 pixels of 4 dots | white text, 16 colours |
+| Mono | green dots, the half‑pixel shift | green dots | green |
 
 **Text rows** are interleaved: row r starts at
 `page + (r mod 8) × $80 + (r div 8) × $28`. Bytes $x78‑$x7F of each $80 are
@@ -296,12 +298,21 @@ real time. The display (`withMemory`) copies the pages in `mem` to
 **Double hi‑res** (80COL, DHIRES, HIRES, graphics): each line is 560 dots,
 40 bytes of aux memory and 40 of main in turn (aux first), 7 dots a byte,
 bit 0 first, from the hi‑res page's addresses (page 2 at $4000 in both
-banks). In colour every 4 dots, from the line's start, are one of 140
-pixels, of the lo‑res colour (`Screen.loresColours`) their bits make,
-rotated a bit to the left: dot 0 → bit 1, dot 1 → bit 2, dot 2 → bit 3,
-dot 3 → bit 0. That is how lo‑res colours lie on the dots, so double
-hi‑res shows lo‑res colour n where its dots repeat n's pattern. Mono: the
-dots. No fringes between pixels, as an RGB monitor shows it.
+banks). A dot's place in the colour cycle (its position mod 4) gives it
+its bit of a lo‑res colour (`Screen.loresColours`): dot 0 → bit 1, dot 1 →
+bit 2, dot 2 → bit 3, dot 3 → bit 0. That is how lo‑res colours lie on the
+dots, so double hi‑res shows lo‑res colour n where its dots repeat n's
+pattern.
+
+* *Color Filled*: every 4 dots, from the line's start, are one of 140
+  pixels, of the colour their bits make. No fringes between pixels, as an
+  RGB monitor shows it.
+* *Color*: as a composite monitor shows it (and as hi‑res *Color*): each
+  dot takes the colour of the 4 dots from the one before it to the second
+  after it, so colours fringe where they meet and detail finer than 4 dots
+  shows. A lit dot is in that colour, an unlit one with lit dots within 3
+  on both sides (a gap) at 40 % (`gapShade`), any other black.
+* *Mono*: the dots.
 
 **Double lo‑res** (80COL, DHIRES, lo‑res): 80 × 48 blocks, aux memory's
 then main's, 7 dots wide; an aux block's colour is its nibble rotated a bit

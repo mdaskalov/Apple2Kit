@@ -54,7 +54,8 @@ enum KeyMap {
 
     #if canImport(UIKit) && !os(watchOS)
     /// The Apple key for a hardware keyboard's key; nil: not one (⌘
-    /// shortcuts go to the key commands).
+    /// shortcuts go to the key commands).  On tvOS esc is Back (the remote's
+    /// Menu; the Simulator's remote sends it too): Ctrl-[ is the Apple's ESC.
     static func ascii(for key: UIKey, lowercase: Bool = false) -> UInt8? {
         let flags = key.modifierFlags
         if flags.contains(.command) { return nil }
@@ -64,7 +65,11 @@ enum KeyMap {
         case .keyboardRightArrow: return right
         case .keyboardUpArrow: return up
         case .keyboardDownArrow: return down
+        #if os(tvOS)
+        case .keyboardEscape where !flags.contains(.control): return nil   // Back, as the remote's Menu
+        #else
         case .keyboardEscape: return escape
+        #endif
         case .keyboardTab: return tab
         default: break
         }
@@ -82,16 +87,16 @@ enum KeyMap {
     }
 
     #if os(tvOS)
-    /// The Siri Remote: the arrows as the arrow keys, select as return,
-    /// play/pause as space.  Menu isn't one (it goes back).
+    /// The Siri Remote as many games' keys: the arrows as I, J, K, M (up,
+    /// left, right, down), select as space.  Play/pause isn't one (it is
+    /// Ctrl for the next of these: `ScreenUIView`), nor Menu (it goes back).
     static func ascii(for press: UIPress.PressType) -> UInt8? {
         switch press {
-        case .upArrow: up
-        case .downArrow: down
-        case .leftArrow: left
-        case .rightArrow: right
-        case .select: returnKey
-        case .playPause: 0x20
+        case .upArrow: 0x49             // I
+        case .leftArrow: 0x4A           // J
+        case .rightArrow: 0x4B          // K
+        case .downArrow: 0x4D           // M
+        case .select: 0x20
         default: nil
         }
     }

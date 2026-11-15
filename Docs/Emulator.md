@@ -161,7 +161,13 @@ the message.
   on‑screen keyboard through `UIKeyInput` (`insertText` → `type`,
   `deleteBackward` → ←) and a key bar (`inputAccessoryView`: esc, ctrl for
   the next key, arrows). It takes the focus at once when a hardware keyboard
-  is there (`GCKeyboard.coalesced`), else on a tap.
+  is there (`GCKeyboard.coalesced`), else on a tap. tvOS: the Siri Remote's
+  arrows are I, J, K, M, select space, play/pause Ctrl for the next of them
+  (`KeyMap.ascii(for: UIPress.PressType)`); Menu goes on to the app. The
+  screen is a `GCEventViewController`'s view: UIKit gets no controller
+  presses from when a gamepad is played (so its B isn't Menu) until the Siri
+  Remote is used or the last gamepad goes; a gamepad only connected doesn't
+  count (the Simulator connects one at launch).
 * ⌥ left/right (`flagsChanged`, device bits $20/$40; UIKit: the alt keys'
   presses) → `Apple2Machine.gamePort.buttons[0/1]`.
 * A game controller → the joystick, every frame (`readGameController`,

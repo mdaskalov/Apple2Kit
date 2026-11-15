@@ -72,7 +72,7 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   `load(url or bytes, at:, run:)` for binaries; `print(_:atX:y:uppercased:cls:)`
   (row 0‑23, centred without `atX`, cut off at the row's ends; capitals on
   the ][ and ][+) and `cls()` on text page 1; `type(_:)`, `screenText`,
-  `memoryDump`; `sound`, `fastDisk`, `model`; status for a UI: `drives`,
+  `memoryDump`; `sound`, `volume`, `fastDisk`, `model`; status for a UI: `drives`,
   `registers`, `videoMode`, `speed`, `paused`, `message`; `machine` (the
   hardware, an `Apple2Machine`) for the rest.
 * `Apple2View(apple, style:, scale:)`: shows and runs it (a display link),
@@ -177,7 +177,7 @@ only. `Apple2View` and its keys differ:
 |---|---|---|
 | macOS | `NSView`, display link | the keyboard (a click gives the view the focus); left/right ⌥ the push buttons |
 | iOS, iPadOS, visionOS | `UIView`, `CADisplayLink` | a hardware keyboard as on the Mac (the view takes it at once); else a tap shows the on‑screen keyboard with a bar for esc, ctrl and the arrows, a tap again hides it |
-| tvOS | `UIView`, `CADisplayLink` | a hardware keyboard; the Siri Remote: arrows, select (RETURN), play/pause (space) |
+| tvOS | `UIView`, `CADisplayLink` | a hardware keyboard; the Siri Remote as many games' keys: the arrows I, J, K, M, select space, play/pause Ctrl for the next of them; Menu goes back |
 | watchOS | SwiftUI `TimelineView` | none: give the app buttons that call `press(_:)` or `type(_:)` |
 
 Sound plays on all of them (`AVAudioEngine`; on iOS, tvOS, watchOS and

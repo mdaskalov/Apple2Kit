@@ -106,10 +106,18 @@ import Testing
             }
         }
         set(m, 0xC004)
-        let pixels = m.screenPixels(style: .color)
+        let pixels = m.screenPixels(style: .filled)
         #expect(pixels[0 ..< 28].allSatisfy { $0 == Screen.loresColours[1] })
         #expect(pixels[560 ..< 588].allSatisfy { $0 == Screen.loresColours[2] })
         #expect(pixels[28] == Screen.black)
+        // Color: magenta's lit dots (3, 7, … 27) in it, the gaps between them dark, black around
+        let color = m.screenPixels(style: .color)
+        let gap = Screen.loresGapColours[1]
+        #expect(color[0 ..< 3].allSatisfy { $0 == Screen.black })
+        #expect(stride(from: 3, to: 28, by: 4).allSatisfy { color[$0] == Screen.loresColours[1] })
+        #expect(color[4 ..< 7].allSatisfy { $0 == gap } && color[24 ..< 27].allSatisfy { $0 == gap })
+        #expect(color[28 ..< 32].allSatisfy { $0 == Screen.black })
+        #expect(color[560 ..< 588] != pixels[560 ..< 588])
         let mono = m.screenPixels(style: .monochrome)
         #expect(mono[3] == Screen.green && mono[0 ..< 3].allSatisfy { $0 == Screen.black })
         _ = m.cpu.read(0xC05F)                              // DHIRES off: hi-res from main memory alone

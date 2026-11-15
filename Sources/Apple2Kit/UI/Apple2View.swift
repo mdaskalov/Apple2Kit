@@ -8,8 +8,9 @@ import SwiftUI
 /// * iOS, iPadOS, visionOS: a hardware keyboard (as the Mac's), else a tap
 ///   brings up the on-screen keyboard with a bar of the keys it lacks (esc,
 ///   ctrl, the arrows); a tap again hides it.
-/// * tvOS: a hardware keyboard, and the Siri Remote: the arrows, select
-///   (return), play/pause (space).
+/// * tvOS: a hardware keyboard, and the Siri Remote as many games' keys:
+///   the arrows I, J, K, M (up, left, right, down), select space,
+///   play/pause Ctrl for the next of them.  Menu goes back to the app.
 /// * watchOS: the screen only; keys through `Apple2.press`/`type`.
 ///
 /// `style`: how the screen is coloured (Color, Color Filled, Mono).

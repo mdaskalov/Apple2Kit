@@ -12,8 +12,9 @@ import MOS6502
 ///   the //e's 80 columns: aux and main memory's characters in turn;
 /// * lo-res: 40 × 48 blocks in the 16 colours (the //e's double lo-res: 80 × 48);
 /// * hi-res: 280 × 192 in one of the three `Style`s;
-/// * the //e's double hi-res: 560 dots a line from aux and main memory,
-///   140 × 192 in the 16 colours (on the monochrome screen the dots);
+/// * the //e's double hi-res: 560 dots a line from aux and main memory in
+///   the 16 colours, a colour a dot (`Style.color`) or 140 × 192
+///   (`Style.filled`); on the monochrome screen the dots;
 /// * mixed: graphics with the text's last 4 lines.
 ///
 /// Docs/Hardware.md has the memory layout.
@@ -26,10 +27,12 @@ public nonisolated enum Screen {
         /// Each lit pixel in its colour: violet, green, blue, orange by
         /// palette bit and column, white next to another lit pixel; a gap in
         /// a colour in a dark shade of it (`gapShade`); a byte with the
-        /// palette bit set half a pixel to the right.
+        /// palette bit set half a pixel to the right.  Double hi-res: each
+        /// dot in the colour of the dots around it, its gaps dark too.
         case color = "Color"
         /// A colour's gaps filled in its colour, each pixel two dots where
-        /// its column is, no byte shifted half a pixel.
+        /// its column is, no byte shifted half a pixel.  Double hi-res: 140
+        /// pixels a line, 4 dots each.
         case filled = "Color Filled"
         /// As on a green monochrome monitor (with the half-pixel shift).
         case monochrome = "Mono"
@@ -48,8 +51,8 @@ public nonisolated enum Screen {
     /// Hi-res: [palette bit × 2 + column parity]: violet, green, blue, orange.
     public static let hiresRGB = [RGB(r: 255, g: 68, b: 253), RGB(r: 20, g: 245, b: 60),
                                   RGB(r: 20, g: 207, b: 253), RGB(r: 255, g: 106, b: 60)]
-    /// `Style.color`: a gap in a colour (an unlit pixel between two lit ones)
-    /// in the colour this much as bright – not quite black (it looks better than
+    /// `Style.color`: a gap in a colour (an unlit pixel between two lit ones;
+    /// in double hi-res an unlit dot) in the colour this much as bright – not quite black (it looks better than
     /// black).
     public static let gapShade = 0.4
 
@@ -64,9 +67,7 @@ public nonisolated enum Screen {
     static let white = rgba(whiteRGB)
     static let green = rgba(monoRGB)
     static let hiresColours = hiresRGB.map(rgba)
-    static let gapColours = hiresRGB.map {
-        rgba(UInt8(Double($0.r) * gapShade), UInt8(Double($0.g) * gapShade), UInt8(Double($0.b) * gapShade))
-    }
+    static let gapColours = hiresColours.map(shaded)
     /// Lo-res colours 0-15.
     static let loresColours: [UInt32] = [
         rgba(0, 0, 0), rgba(227, 30, 96), rgba(96, 78, 189), rgba(255, 68, 253),
@@ -74,6 +75,14 @@ public nonisolated enum Screen {
         rgba(96, 114, 3), rgba(255, 106, 60), rgba(156, 156, 156), rgba(255, 160, 208),
         rgba(20, 245, 60), rgba(208, 221, 141), rgba(114, 255, 208), rgba(255, 255, 255),
     ]
+    /// Lo-res colours 0-15 at `gapShade` (double hi-res's gaps in `Style.color`).
+    static let loresGapColours = loresColours.map { shaded($0) }
+
+    /// `c` (RGBA) at `gapShade`.
+    static func shaded(_ c: UInt32) -> UInt32 {
+        rgba(UInt8(Double(c & 0xFF) * gapShade), UInt8(Double(c >> 8 & 0xFF) * gapShade),
+             UInt8(Double(c >> 16 & 0xFF) * gapShade))
+    }
 
     /// Text and lo-res row `row`'s first byte (page 1 at $0400, page 2 at $0800).
     @inline(__always) static func textAddress(row: Int, page2: Bool) -> Int {
@@ -173,26 +182,56 @@ public nonisolated enum Screen {
 
     /// Double hi-res lines: each line's 560 dots from the 40 bytes of the
     /// line in aux and main memory in turn (aux first), 7 dots a byte, bit 0
-    /// first.  In colour each 4 dots are a pixel, of the lo-res colour their
-    /// bits make: dot 0 bit 1, dot 1 bit 2, dot 2 bit 3, dot 3 bit 0 – as lo-res
-    /// colours lie on the dots; on the monochrome screen the dots themselves.
+    /// first.  A dot's place in the colour cycle gives it its bit of a lo-res
+    /// colour: dot 0 bit 1, dot 1 bit 2, dot 2 bit 3, dot 3 bit 0 (mod 4) – as
+    /// lo-res colours lie on the dots.
+    ///
+    /// * `Style.filled`: each 4 dots from the line's start a pixel of the
+    ///   colour their bits make, as an RGB monitor shows it;
+    /// * `Style.color`: as a composite monitor shows it, and as hi-res's
+    ///   `Style.color`: each dot of the colour the 4 dots around it make (one
+    ///   before, two after), so colours fringe where they meet; a lit dot in
+    ///   it, an unlit one between lit ones (a gap) in a dark shade of it
+    ///   (`gapShade`), any other black;
+    /// * `Style.monochrome`: the dots.
     private static func drawDoubleHires(_ m: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>, lines: Range<Int>,
                                         page2: Bool, style: Style, _ out: UnsafeMutablePointer<UInt32>) {
-        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: width) { dots in
-            for y in lines {
-                let address = hiresAddress(line: y, page2: page2), o = out + y * width
-                for b in 0 ..< 80 {
-                    let byte = b & 1 == 0 ? aux[address + b / 2] : m[address + b / 2]
-                    for i in 0 ..< 7 { dots[b * 7 + i] = byte >> i & 1 }
-                }
-                if style == .monochrome {
-                    for d in 0 ..< width { o[d] = dots[d] != 0 ? green : black }
-                    continue
-                }
-                for x in stride(from: 0, to: width, by: 4) {
-                    let n = Int(dots[x] | dots[x + 1] << 1 | dots[x + 2] << 2 | dots[x + 3] << 3)
-                    let colour = loresColours[rotatedLeft(n)]
-                    for d in 0 ..< 4 { o[x + d] = colour }
+        // the line's dots with 3 blank ones on either side
+        withUnsafeTemporaryAllocation(of: UInt8.self, capacity: width + 6) { buffer in
+            let dots = buffer.baseAddress! + 3
+            for i in -3 ..< 0 { dots[i] = 0; dots[width - 1 - i] = 0 }
+            loresColours.withUnsafeBufferPointer { colours in
+                loresGapColours.withUnsafeBufferPointer { gaps in
+                    for y in lines {
+                        let address = hiresAddress(line: y, page2: page2), o = out + y * width
+                        for b in 0 ..< 80 {
+                            let byte = b & 1 == 0 ? aux[address + b / 2] : m[address + b / 2]
+                            for i in 0 ..< 7 { dots[b * 7 + i] = byte >> i & 1 }
+                        }
+                        switch style {
+                        case .monochrome:
+                            for d in 0 ..< width { o[d] = dots[d] != 0 ? green : black }
+                        case .filled:
+                            for x in stride(from: 0, to: width, by: 4) {
+                                let n = Int(dots[x] | dots[x + 1] << 1 | dots[x + 2] << 2 | dots[x + 3] << 3)
+                                let colour = colours[rotatedLeft(n)]
+                                for d in 0 ..< 4 { o[x + d] = colour }
+                            }
+                        case .color:
+                            for d in 0 ..< width {
+                                var n = 0
+                                for i in d - 1 ... d + 2 { n |= Int(dots[i]) << ((i + 1) & 3) }
+                                if dots[d] != 0 {
+                                    o[d] = colours[n]
+                                } else if dots[d - 1] | dots[d - 2] | dots[d - 3] != 0,
+                                          dots[d + 1] | dots[d + 2] | dots[d + 3] != 0 {
+                                    o[d] = gaps[n]
+                                } else {
+                                    o[d] = black
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

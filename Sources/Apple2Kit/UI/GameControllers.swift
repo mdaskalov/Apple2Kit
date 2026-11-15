@@ -47,15 +47,18 @@ public enum GameControllers {
 }
 
 public nonisolated extension Apple2Machine {
-    /// The game controller as the joystick (`GameControllers`): plugged in
-    /// once one is connected, its stick and buttons while `playing`, else
-    /// let go.  When it goes, the joystick stays plugged in, let go: a
-    /// program reads one unplugged as all the way right and down.  Returns
-    /// the controller's name; nil: none connected.
+    /// The game controller as the joystick (`GameControllers`), its stick
+    /// and buttons while `playing`, else let go; none connected: a
+    /// joystick let go.  Not `plugged`: no joystick at all (a program reads
+    /// one unplugged as all the way right and down).  Returns the
+    /// controller's name; nil: none connected, or not plugged.
     @MainActor @discardableResult
-    func readGameController(playing: Bool = true) -> String? {
+    func readGameController(playing: Bool = true, plugged: Bool = true) -> String? {
+        guard plugged else {
+            if gamePort.joystick != nil { gamePort.joystick = nil }
+            return nil
+        }
         let controller = GameControllers.read()
-        guard controller != nil || gamePort.joystick != nil else { return nil }
         let joystick = playing ? controller?.joystick ?? .centre : .centre
         if gamePort.joystick != joystick { gamePort.joystick = joystick }
         return controller?.name

@@ -7,8 +7,8 @@ import UIKit
 /// On tvOS the screen is the view of a `GCEventViewController`, so that a
 /// gamepad plays only as the joystick: its d-pad, A and B (Menu) would
 /// otherwise come to UIKit as well, as the arrows, return and leaving the
-/// app.  The Siri Remote goes on being the keys while it is the controller
-/// in use.
+/// app.  The Siri Remote goes on being the keys (and Menu going back) until
+/// a gamepad is played.
 struct ScreenRepresentable: UIViewControllerRepresentable {
     let emulator: Apple2
     let style: Screen.Style
@@ -25,7 +25,7 @@ struct ScreenRepresentable: UIViewControllerRepresentable {
 
 final class ScreenViewController: GCEventViewController {
     let screen: ScreenUIView
-    private var observer: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
 
     init(screen: ScreenUIView) {
         self.screen = screen
@@ -38,23 +38,55 @@ final class ScreenViewController: GCEventViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        update()
-        observer = NotificationCenter.default.addObserver(forName: .GCControllerDidBecomeCurrent, object: nil,
-                                                          queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.update() }
-        }
+        controllerUserInteractionEnabled = true
+        GCController.controllers().forEach(watch)
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    if let controller = note.object as? GCController { self?.watch(controller) }
+                }
+            },
+            center.addObserver(forName: .GCControllerDidBecomeCurrent, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if let current = GCController.current, current.extendedGamepad == nil { self?.gamepadInUse(false) }
+                }
+            },
+            center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if !GCController.controllers().contains(where: { $0.extendedGamepad != nil }) {
+                        self?.gamepadInUse(false)
+                    }
+                }
+            },
+        ]
     }
 
     isolated deinit {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] { [screen] }
 
-    /// UIKit gets a controller's presses only while the one in use isn't a
-    /// gamepad (the Siri Remote).
-    private func update() {
-        controllerUserInteractionEnabled = GCController.current?.extendedGamepad == nil
+    /// UIKit gets the controllers' presses only while a gamepad isn't in
+    /// use: from when one is played (not when it connects: a gamepad
+    /// connected doesn't make the Siri Remote's presses go) until the Siri
+    /// Remote is, or the last gamepad goes.  The Simulator's remote isn't a
+    /// controller: there a gamepad played stays in use.
+    private func watch(_ controller: GCController) {
+        if let pad = controller.extendedGamepad {
+            pad.valueChangedHandler = { [weak self] _, _ in
+                DispatchQueue.main.async { self?.gamepadInUse(true) }
+            }
+        } else {
+            controller.microGamepad?.valueChangedHandler = { [weak self] _, _ in
+                DispatchQueue.main.async { self?.gamepadInUse(false) }
+            }
+        }
+    }
+
+    private func gamepadInUse(_ inUse: Bool) {
+        if controllerUserInteractionEnabled == inUse { controllerUserInteractionEnabled = !inUse }
     }
 }
 #else
@@ -129,13 +161,23 @@ final class ScreenUIView: UIView, UIKeyInput {
 
     // MARK: hardware keys
 
-    /// The Apple key for a press: a keyboard's, or the Siri Remote's.
+    /// The Apple key for a press: a keyboard's, or the Siri Remote's (a
+    /// control key after play/pause).
     private func ascii(for press: UIPress) -> UInt8? {
         if let key = press.key { return KeyMap.ascii(for: key, lowercase: emulator.model.isIIe) }
         #if os(tvOS)
-        return KeyMap.ascii(for: press.type)
+        return KeyMap.ascii(for: press.type).map { control && $0 >= 0x40 ? $0 & 0x1F : $0 }
         #else
         return nil
+        #endif
+    }
+
+    /// The Siri Remote's play/pause: Ctrl for its next key.
+    private func isControl(_ press: UIPress) -> Bool {
+        #if os(tvOS)
+        press.key == nil && press.type == .playPause
+        #else
+        false
         #endif
     }
 
@@ -145,6 +187,8 @@ final class ScreenUIView: UIView, UIKeyInput {
         let rest = presses.filter { press in
             if let key = press.key, let button = KeyMap.button(for: key) {
                 emulator.setButton(button, pressed: true)
+            } else if isControl(press) {
+                pressControl(!control)
             } else if let ascii = ascii(for: press) {
                 pressControl(false)
                 emulator.keyDown(ascii, id: id(of: press))
@@ -173,6 +217,7 @@ final class ScreenUIView: UIView, UIKeyInput {
                 emulator.setButton(button, pressed: false)
                 return false
             }
+            if isControl(press) { return false }
             guard ascii(for: press) != nil else { return true }
             emulator.keyUp(id: id(of: press))
             return false
@@ -187,7 +232,8 @@ final class ScreenUIView: UIView, UIKeyInput {
 
     // MARK: the on-screen keyboard
 
-    /// Ctrl from the key bar: the next key typed is a control key.
+    /// Ctrl from the key bar (the Siri Remote's play/pause): the next key
+    /// typed is a control key.
     private var control = false
 
     private func pressControl(_ on: Bool) {
