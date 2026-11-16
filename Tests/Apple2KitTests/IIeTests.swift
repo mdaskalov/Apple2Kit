@@ -138,4 +138,39 @@ import Testing
         _ = m.cpu.read(0xC05F)                              // DHIRES off: hi-res from main memory alone
         #expect(m.displayMode.description == "Hi-res")
     }
+
+    @Test func rgbCardModes() {
+        let m = iie()
+        for s: UInt16 in [0xC050, 0xC052, 0xC057] { _ = m.cpu.read(s) }
+        /// Clocks the RGB card's flags in (AN3 off, on, with 80COL off for a 1), then double hi-res.
+        func rgbMode(_ flags: [Bool]) {
+            for f in flags {
+                set(m, f ? 0xC00C : 0xC00D)
+                _ = m.cpu.read(0xC05E); _ = m.cpu.read(0xC05F)
+            }
+            set(m, 0xC00D)
+            _ = m.cpu.read(0xC05E)
+        }
+        set(m, 0xC005); m.cpu.write(0x2000, 0x01)          // aux: dot 0, black and white
+        set(m, 0xC004); m.cpu.write(0x2000, 0xFF)          // main: dots 7-13, colour
+        rgbMode([true, true])
+        #expect(m.displayMode.rgb == .monochrome)
+        var pixels = m.screenPixels(style: .filled)
+        #expect(pixels[0] == Screen.white && pixels[1 ..< 7].allSatisfy { $0 == Screen.black })
+        #expect(pixels[7 ..< 14].allSatisfy { $0 == Screen.white })
+        rgbMode([true, false])
+        #expect(m.displayMode.rgb == .mixed)
+        pixels = m.screenPixels(style: .filled)
+        #expect(pixels[0] == Screen.white && pixels[1 ..< 7].allSatisfy { $0 == Screen.black })
+        #expect(pixels[7] == Screen.black)                  // pixel 1 begun in the black and white byte
+        #expect(pixels[8 ..< 12].allSatisfy { $0 == Screen.loresColours[15] })
+        #expect(m.screenPixels(style: .color)[0 ..< 14] != pixels[0 ..< 14])
+        rgbMode([false, false])
+        #expect(m.displayMode.rgb == .color)
+        pixels = m.screenPixels(style: .filled)
+        #expect(pixels[0 ..< 4].allSatisfy { $0 == pixels[0] } && pixels[0] != Screen.white)
+        rgbMode([true, true])
+        m.reset()
+        #expect(m.displayMode.rgb == .color)
+    }
 }

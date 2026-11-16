@@ -181,7 +181,7 @@ public nonisolated final class Apple2Machine {
         if rom == nil { cls() }                 // no ROM clears the screen
         languageCard = LanguageCard(ramOnly: rom == nil)
         mapLanguageCard()
-        for slot in 1 ... 7 where cards[slot] != nil { putROMPage(slot) }
+        for slot in 1 ... 7 where hasCard(slot) { putROMPage(slot) }     // the mouse card's too
         video = VideoMode()
         keyboard = Keyboard(repeats: isIIe)
         resetMouse()
@@ -208,6 +208,7 @@ public nonisolated final class Apple2Machine {
         setIIeSwitches(IIeSwitches())
         video.altCharset = false
         video.col80 = false
+        video.resetRGB()
         cpu.reset()
     }
 
@@ -807,6 +808,25 @@ public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertibl
     public var col80 = false
     /// The //e's DHIRES (annunciator 3 off, $C05E; on $C05F).
     public var dhires = false
+    /// How an RGB card (the Video-7 kind: Apple's Extended 80-Column
+    /// Text/AppleColor card, Le Chat Mauve) shows double hi-res on an RGB
+    /// monitor (`Screen.Style.filled`).
+    public var rgb = RGBMode.color
+    /// The RGB card's two flags, clocked in by `set`.
+    private var rgbFlags = 0, an3Off = false
+
+    /// An RGB card's double hi-res modes.  A program picks one turning
+    /// annunciator 3 off then on ($C05E, $C05F) twice, each time with 80COL
+    /// off for a 1, on for a 0: 00 colour, 11 monochrome, 10 mixed (01, 160
+    /// pixels a line on some cards, shows as colour).
+    public enum RGBMode: Sendable {
+        /// 140 pixels a line of 4 dots each.
+        case color
+        /// The 560 dots in black and white.
+        case monochrome
+        /// A byte with bit 7 set in colour, else its dots in black and white.
+        case mixed
+    }
 
     /// What the screen shows: "Hi-res mixed", "80-column text", "Double hi-res".
     public var description: String {
@@ -814,6 +834,9 @@ public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertibl
         let name = text ? (col80 ? "80-column text" : "Text") : graphics.prefix(1).uppercased() + graphics.dropFirst()
         return name + (mixed && !text ? " mixed" : "")
     }
+
+    /// The RGB card back to colour, as RESET leaves it.
+    mutating func resetRGB() { (rgb, rgbFlags, an3Off) = (.color, 0, false) }
 
     mutating func set(_ n: Int) {
         switch n {
@@ -826,9 +849,15 @@ public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertibl
         case 6: hires = false
         case 7: hires = true
         case 0xE: dhires = true
-        case 0xF: dhires = false
+        case 0xF:
+            dhires = false
+            if an3Off {                         // the RGB card clocks in !80COL
+                rgbFlags = (rgbFlags << 1 & 3) | (col80 ? 0 : 1)
+                rgb = [.color, .color, .mixed, .monochrome][rgbFlags]
+            }
         default: break                          // the other annunciators
         }
+        if n & 0xE == 0xE { an3Off = n == 0xE }
     }
 }
 

@@ -8,13 +8,15 @@ import MOS6502
 ///
 /// * text: 40 × 24 characters from `Charset`, inverse below $40, flashing
 ///   $40-$7F (the ][ and ][+ have no lower case: $E0-$FF show as $A0-$BF;
-///   the //e shows it, and with ALTCHARSET $40-$7F inverse, $60-$7F lower case);
+///   the //e shows it, and with ALTCHARSET $40-$7F inverse, $60-$7F lower case,
+///   the enhanced //e's $40-$5F MouseText);
 ///   the //e's 80 columns: aux and main memory's characters in turn;
 /// * lo-res: 40 × 48 blocks in the 16 colours (the //e's double lo-res: 80 × 48);
 /// * hi-res: 280 × 192 in one of the three `Style`s;
 /// * the //e's double hi-res: 560 dots a line from aux and main memory in
-///   the 16 colours, a colour a dot (`Style.color`) or 140 × 192
-///   (`Style.filled`); on the monochrome screen the dots;
+///   the 16 colours, a colour a dot (`Style.color`) or as an RGB card
+///   shows it (`Style.filled`: 140 × 192, 560 dots black and white or the
+///   two mixed, `VideoMode.rgb`); on the monochrome screen the dots;
 /// * mixed: graphics with the text's last 4 lines.
 ///
 /// Docs/Hardware.md has the memory layout.
@@ -31,8 +33,8 @@ public nonisolated enum Screen {
         /// dot in the colour of the dots around it, its gaps dark too.
         case color = "Color"
         /// A colour's gaps filled in its colour, each pixel two dots where
-        /// its column is, no byte shifted half a pixel.  Double hi-res: 140
-        /// pixels a line, 4 dots each.
+        /// its column is, no byte shifted half a pixel.  Double hi-res: as an
+        /// RGB card shows it on an RGB monitor (`VideoMode.rgb`).
         case filled = "Color Filled"
         /// As on a green monochrome monitor (with the half-pixel shift).
         case monochrome = "Mono"
@@ -96,30 +98,37 @@ public nonisolated enum Screen {
 
     /// Draws the display of `main` memory (and the //e's `aux` memory, 48K
     /// each) in `mode` into `pixels` (560 × 192).  `flash`: flashing
-    /// characters show inverse now.  `lowercase`: the //e's character sets.
+    /// characters show inverse now.  `lowercase`: the //e's character sets;
+    /// `mouseText`: the enhanced //e's, MouseText at $40-$5F with ALTCHARSET.
     /// 80 columns, double lo-res and double hi-res need `aux`.
     static func render(_ main: UnsafePointer<UInt8>, aux: UnsafePointer<UInt8>? = nil, mode: VideoMode, flash: Bool,
-                       lowercase: Bool = false, style: Style, into pixels: UnsafeMutableBufferPointer<UInt32>) {
+                       lowercase: Bool = false, mouseText: Bool = false, style: Style,
+                       into pixels: UnsafeMutableBufferPointer<UInt32>) {
         let out = pixels.baseAddress!
         let fg = style == .monochrome ? green : white
         let aux80 = mode.col80 ? aux : nil, double = mode.dhires ? aux80 : nil
         if mode.text {
-            drawText(main, aux80, rows: 0 ..< 24, mode: mode, flash: flash, lowercase: lowercase, fg: fg, out)
+            drawText(main, aux80, rows: 0 ..< 24, mode: mode, flash: flash, lowercase: lowercase, mouseText: mouseText,
+                     fg: fg, out)
             return
         }
         let split = mode.mixed ? 20 : 24
         switch (mode.hires, double) {
         case (true, nil): drawHires(main, lines: 0 ..< split * 8, page2: mode.page2, style: style, out)
-        case (true, let aux?): drawDoubleHires(main, aux, lines: 0 ..< split * 8, page2: mode.page2, style: style, out)
+        case (true, let aux?):
+            drawDoubleHires(main, aux, lines: 0 ..< split * 8, page2: mode.page2, style: style, rgb: mode.rgb, out)
         case (false, let aux): drawLores(main, aux, rows: 0 ..< split, page2: mode.page2, style: style, out)
         }
-        if mode.mixed { drawText(main, aux80, rows: 20 ..< 24, mode: mode, flash: flash, lowercase: lowercase, fg: fg, out) }
+        if mode.mixed {
+            drawText(main, aux80, rows: 20 ..< 24, mode: mode, flash: flash, lowercase: lowercase, mouseText: mouseText,
+                     fg: fg, out)
+        }
     }
 
     /// Text rows: 40 characters a row from `m`, each 14 dots wide; with `aux`
     /// (80 columns) 80, 7 dots each, aux memory's first.
     private static func drawText(_ m: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>?, rows: Range<Int>,
-                                 mode: VideoMode, flash: Bool, lowercase: Bool, fg: UInt32,
+                                 mode: VideoMode, flash: Bool, lowercase: Bool, mouseText: Bool, fg: UInt32,
                                  _ out: UnsafeMutablePointer<UInt32>) {
         let columns = aux == nil ? 40 : 80, dots = aux == nil ? 2 : 1
         Charset.glyphs.withUnsafeBufferPointer { glyphs in
@@ -135,7 +144,12 @@ public nonisolated enum Screen {
                     if lowercase, code >= 0xE0 || (mode.altCharset && code & 0xE0 == 0x60) {
                         glyph = Int(code & 0x7F) - Charset.first
                     }
-                    let inverse = code < 0x40 || (code < 0x80 && (flash || (lowercase && mode.altCharset)))
+                    var inverse = code < 0x40 || (code < 0x80 && (flash || (lowercase && mode.altCharset)))
+                    // the enhanced //e: ALTCHARSET's $40-$5F MouseText, drawn as it is
+                    if mouseText, mode.altCharset, code & 0xE0 == 0x40 {
+                        glyph = Charset.mouseText + Int(code & 0x1F)
+                        inverse = false
+                    }
                     for y in 0 ..< 8 {
                         let bits = glyphs[glyph * 8 + y]
                         let o = out + (row * 8 + y) * width + column * 7 * dots
@@ -186,8 +200,12 @@ public nonisolated enum Screen {
     /// colour: dot 0 bit 1, dot 1 bit 2, dot 2 bit 3, dot 3 bit 0 (mod 4) – as
     /// lo-res colours lie on the dots.
     ///
-    /// * `Style.filled`: each 4 dots from the line's start a pixel of the
-    ///   colour their bits make, as an RGB monitor shows it;
+    /// * `Style.filled`: as an RGB card shows it on an RGB monitor, in its
+    ///   mode (`rgb`): each 4 dots from the line's start a pixel of the
+    ///   colour their bits make; or the dots in black and white; or mixed: a
+    ///   byte with bit 7 set in colour, else its dots in black and white – a
+    ///   colour pixel ends where a black and white byte starts, and the last
+    ///   dot of a black and white byte lasts to the next pixel's start;
     /// * `Style.color`: as a composite monitor shows it, and as hi-res's
     ///   `Style.color`: each dot of the colour the 4 dots around it make (one
     ///   before, two after), so colours fringe where they meet; a lit dot in
@@ -195,9 +213,11 @@ public nonisolated enum Screen {
     ///   (`gapShade`), any other black;
     /// * `Style.monochrome`: the dots.
     private static func drawDoubleHires(_ m: UnsafePointer<UInt8>, _ aux: UnsafePointer<UInt8>, lines: Range<Int>,
-                                        page2: Bool, style: Style, _ out: UnsafeMutablePointer<UInt32>) {
+                                        page2: Bool, style: Style, rgb: VideoMode.RGBMode,
+                                        _ out: UnsafeMutablePointer<UInt32>) {
         // the line's dots with 3 blank ones on either side
         withUnsafeTemporaryAllocation(of: UInt8.self, capacity: width + 6) { buffer in
+            var colourByte = [Bool](repeating: true, count: 80)
             let dots = buffer.baseAddress! + 3
             for i in -3 ..< 0 { dots[i] = 0; dots[width - 1 - i] = 0 }
             loresColours.withUnsafeBufferPointer { colours in
@@ -207,15 +227,24 @@ public nonisolated enum Screen {
                         for b in 0 ..< 80 {
                             let byte = b & 1 == 0 ? aux[address + b / 2] : m[address + b / 2]
                             for i in 0 ..< 7 { dots[b * 7 + i] = byte >> i & 1 }
+                            colourByte[b] = rgb == .color || rgb == .mixed && byte & 0x80 != 0
                         }
                         switch style {
                         case .monochrome:
                             for d in 0 ..< width { o[d] = dots[d] != 0 ? green : black }
                         case .filled:
-                            for x in stride(from: 0, to: width, by: 4) {
-                                let n = Int(dots[x] | dots[x + 1] << 1 | dots[x + 2] << 2 | dots[x + 3] << 3)
-                                let colour = colours[rotatedLeft(n)]
-                                for d in 0 ..< 4 { o[x + d] = colour }
+                            var last = black        // the last black and white dot
+                            for d in 0 ..< width {
+                                let x = d & ~3, start = d - d % 7
+                                if !colourByte[d / 7] {
+                                    last = dots[d] != 0 ? white : black
+                                    o[d] = last
+                                } else if x < start, !colourByte[d / 7 - 1] {
+                                    o[d] = last     // a pixel begun in black and white
+                                } else {
+                                    let n = Int(dots[x] | dots[x + 1] << 1 | dots[x + 2] << 2 | dots[x + 3] << 3)
+                                    o[d] = colours[rotatedLeft(n)]
+                                }
                             }
                         case .color:
                             for d in 0 ..< width {
@@ -403,7 +432,8 @@ nonisolated extension Apple2Machine {
         var pixels = [UInt32](repeating: Screen.black, count: Screen.width * Screen.height)
         withMemory { main, aux in
             pixels.withUnsafeMutableBufferPointer { out in
-                Screen.render(main, aux: aux, mode: displayMode, flash: flashOn, lowercase: isIIe, style: style, into: out)
+                Screen.render(main, aux: aux, mode: displayMode, flash: flashOn, lowercase: isIIe,
+                              mouseText: model == .apple2eEnhanced, style: style, into: out)
             }
         }
         return pixels

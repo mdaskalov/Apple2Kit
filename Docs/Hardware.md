@@ -79,7 +79,7 @@ where nothing drives the bus. There is no floating‑bus emulation.
 | $C054 / $C055 | R/W | page 1 / page 2 (the //e with 80STORE: the bank of page 1, below) |
 | $C056 / $C057 | R/W | lo‑res / hi‑res |
 | $C058‑$C05D | | annunciators 0‑2 (ignored) |
-| $C05E / $C05F | R/W | annunciator 3 off / on: the //e's DHIRES on / off (double hi‑res, double lo‑res with 80COL) |
+| $C05E / $C05F | R/W | annunciator 3 off / on: the //e's DHIRES on / off (double hi‑res, double lo‑res with 80COL); off then on clocks !80COL into an RGB card's mode |
 | $C060 | R | cassette in (0) |
 | $C061‑$C063 | R | push buttons 0‑2, bit 7 (⌥ left/right = 0/1, a joystick's) |
 | $C064‑$C067 | R | paddle timers 0‑3, bit 7 set while running (Game port, below) |
@@ -202,6 +202,13 @@ at the first read after a press, never bit 6.
 
 The host moves it in the card's counts (`moveMouse(dx:dy:)`, y down) and
 presses its button (`mouseButton(down:)`); the mouse moves only while on.
+`Apple2` has the same, in fractions of a count kept for the next move, and
+`Apple2View` drives them: 280 counts across the view.  On macOS a click in
+the screen captures the pointer (hidden and held still) until ⌘ is pressed
+or the window goes to the back; on iOS, iPadOS and visionOS a finger or the
+pointer moved moves the mouse, a tap or click clicks, a touch held (or a
+click held) drags, and a two-finger tap brings up the keyboard.  Programs
+look for the card as they start: put it in, then boot.
 
 **Interrupts.** The card holds the IRQ line while an interrupt waits
 (movement or the button, with their mode bits; a vertical blank, at line
@@ -239,10 +246,14 @@ the "screen holes" (used by the firmware and the slots).
 
 The font is `Charset.glyphs`: 96 glyphs (ASCII $20‑$7F, 8 rows × 7 dots,
 bit 0 leftmost), made by `Data/charset.py` from a bitmap
-font file. The //e shows the lower case at $E0‑$FF; with
-ALTCHARSET ($C00F) $40‑$7F are inverse instead of flashing, $60‑$7F lower
-case (MouseText, the enhanced //e's at $40‑$5F, isn't there: inverse
-capitals show in its place).
+font file, then the enhanced //e's 32 MouseText glyphs (from glyph
+`Charset.mouseText` on, as its video ROM has them). The //e shows the
+lower case at $E0‑$FF; with ALTCHARSET ($C00F) $40‑$7F are inverse instead
+of flashing, $60‑$7F lower case. The enhanced //e shows MouseText at
+$40‑$5F then, as it is, not inverse (the unenhanced //e inverse capitals):
+apples, pointer, hourglass, check marks, a running man (two glyphs),
+arrows, scroll arrows, a folder (two), lines and corners for windows and
+menus.
 
 **80 columns** (the //e's 80COL, $C00D): each text row is 80 characters,
 aux memory's byte then main memory's at each of the 40 addresses, 7 dots
@@ -304,9 +315,19 @@ bit 2, dot 2 → bit 3, dot 3 → bit 0. That is how lo‑res colours lie on the
 dots, so double hi‑res shows lo‑res colour n where its dots repeat n's
 pattern.
 
-* *Color Filled*: every 4 dots, from the line's start, are one of 140
-  pixels, of the colour their bits make. No fringes between pixels, as an
-  RGB monitor shows it.
+* *Color Filled*: as an RGB card (the Video‑7 kind: Apple's Extended
+  80‑Column Text/AppleColor card, Le Chat Mauve) shows it on an RGB
+  monitor, in the card's mode (`VideoMode.rgb`). A program sets the mode
+  by turning annunciator 3 off then on ($C05E, $C05F) twice, 80COL off
+  for a 1 and on for a 0 each time; RESET sets 00.
+  * 00 (and 01, 160 pixels a line on some cards): every 4 dots, from the
+    line's start, are one of 140 pixels, of the colour their bits make. No
+    fringes between pixels.
+  * 11: the 560 dots in black and white – sharp text.
+  * 10, mixed: a byte with bit 7 set in colour, else its 7 dots in black
+    and white (text beside pictures). A colour pixel ends where a black
+    and white byte starts; one begun in a black and white byte shows its
+    last dot until the next pixel.
 * *Color*: as a composite monitor shows it (and as hi‑res *Color*): each
   dot takes the colour of the 4 dots from the one before it to the second
   after it, so colours fringe where they meet and detail finer than 4 dots
