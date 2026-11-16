@@ -12,7 +12,7 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
 | [../README.md](../README.md) | using the package: the model, the view, an example |
 | [Hardware.md](Hardware.md) | the machine as emulated: memory map, ROMs, soft switches, language card, keyboard, game I/O, the display's memory and character codes |
 | [DiskII.md](DiskII.md) | the Disk II: switches, stepper, the nibble track, 6‑and‑2, sector orders, image formats, the timing model and why, writing |
-| [Emulator.md](Emulator.md) | the code: files, the MOS6502 package, the run loop, sound, inputs, binaries, the headless runner, how to add things (MouseText, bit‑level timing) |
+| [Emulator.md](Emulator.md) | the code: files, the MOS6502 package, the run loop, sound, inputs, binaries, the headless runner, how to add things (bit‑level timing) |
 | [Natives.md](Natives.md) | a program's memory by name, for a host that runs Swift in place of some of its 6502 code: symbol maps (one a build of the program), fingerprints of a routine's code, `RAM`, symbol files for the debugger |
 | [../Data/README.md](../Data/README.md) | the scripts: headless runner, disk catalog/extract/list, disassembler, hex dump, hi‑res to PNG, the font |
 | [charset.png](charset.png) | the text font (`Charset.swift`) |
@@ -23,7 +23,7 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   BASIC, original monitor), 48K + 16K language card, NMOS 6502 at
   1.020484 MHz. Apple //e, unenhanced (6502) and enhanced (65C02), with
   128K (an extended 80‑column card: aux memory, 80 columns), lower case,
-  its firmware (Hardware.md, *The //e*).
+  the enhanced //e's MouseText, its firmware (Hardware.md, *The //e*).
 * **Disk II** in slot 6, two drives, nibble level: `.dsk`/`.do`/`.po` (sector
   order detected), `.nib` and `.woz` (WOZ 1 and 2, read through the latch
   into nibbles; saved as WOZ2). Reading and writing work. Written disks stay in
@@ -54,13 +54,13 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   `sound` mutes it, `volume` (0–1, default 0.5) sets its loudness.
   *Fast Disk* (`fastDisk`) doesn't run ahead of the clock while the
   speaker sounds.
-* **Symbols** (2026‑11‑14, Natives.md): a program's variables, tables and
+* **Symbols** (Natives.md): a program's variables, tables and
   routines by name in a `SymbolMap`, the CPU's memory by those names for
   Swift that stands in for 6502 code (`RAM`), a routine's code checked by
   its fingerprint, and the names as a symbol file for AppleWin's and
   Mariani's debugger. Hooks: Swift where the CPU reaches an address,
   switched on and off by name, the trap bits theirs.
-* **Not there yet:** joystick, the enhanced //e's MouseText, bit‑level disk timing,
+* **Not there yet:** joystick, bit‑level disk timing,
   13‑sector disks, game controllers. iOS, tvOS, watchOS and visionOS build, but have only
   been tried in an app on the Mac so far.
 
