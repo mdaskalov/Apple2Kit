@@ -11,6 +11,10 @@ import SwiftUI
 /// * tvOS: a hardware keyboard, and the Siri Remote as many games' keys:
 ///   the arrows I, J, K, M (up, left, right, down), select space,
 ///   play/pause Ctrl for the next of them.  Menu goes back to the app.
+/// * The mouse card (`Apple2.mouse`), macOS: a click captures the pointer,
+///   ⌘ lets it go.  iOS, iPadOS, visionOS: a finger or the pointer moves
+///   it, a tap clicks, a touch held drags; a two-finger tap is then the
+///   on-screen keyboard's.
 /// * watchOS: the screen only; keys through `Apple2.press`/`type`.
 ///
 /// `style`: how the screen is coloured (Color, Color Filled, Mono).

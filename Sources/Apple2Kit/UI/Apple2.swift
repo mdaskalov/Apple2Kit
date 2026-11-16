@@ -56,10 +56,19 @@ public final class Apple2 {
     /// Run as fast as it goes while a disk drive's motor is on.
     public var fastDisk = true
     /// A mouse card in slot 4 (`Apple2Machine.mouseEnabled`); kept when
-    /// the model changes.
+    /// the model changes.  Programs look for it as they start: put it in
+    /// before booting (or restart).  `Apple2View` moves it with the host's
+    /// mouse, trackpad or touches (`moveMouse`, `mouseButton`).
     public var mouse = false {
-        didSet { machine.mouseEnabled = mouse }
+        didSet {
+            machine.mouseEnabled = mouse
+            if !mouse { mouseRemainder = (0, 0) }
+        }
     }
+    /// The host's pointer is captured for the mouse card (macOS: hidden and
+    /// held still from a click in the screen until ⌘ is pressed or the
+    /// window goes to the back).  For an app to say how to let it go.
+    public internal(set) var mouseCaptured = false
     /// A joystick in the game port: a game controller's, or one let go in
     /// the middle while none is connected.  Off: nothing plugged in – a
     /// program reads the paddles as all the way right and down, and a game
@@ -84,6 +93,8 @@ public final class Apple2 {
     @ObservationIgnored private var frameCount = 0
     @ObservationIgnored private var speedSample: (time: CFTimeInterval, cycles: UInt64)?
     @ObservationIgnored private let soundPlayer = SoundPlayer()
+    /// The fractions of a count `moveMouse` hasn't moved yet.
+    @ObservationIgnored private var mouseRemainder = (x: 0.0, y: 0.0)
 
     /// The disk image files it takes.
     public static let diskTypes = ["dsk", "do", "po", "nib", "woz"].compactMap { UTType(filenameExtension: $0) }
@@ -136,11 +147,15 @@ public final class Apple2 {
     /// (unless muted): its sound keeps the clock's time.  A click stops it
     /// there, and the next frame plays it.  (Sound made while running ahead
     /// would come too fast, chopped up, and late: queued ahead of what
-    /// follows.)
+    /// follows.)  Nor while a key is held: the //e's auto-repeat counts
+    /// cycles, and a Return held for a moment of the Mac's time would be
+    /// seconds of the Apple's, typed again and again.
     private func runAhead() {
-        guard !paused, !(sound && soundPlayer.isSounding), machine.disk.motorOn(at: machine.cpu.cycles) else { return }
+        guard !paused, !(sound && soundPlayer.isSounding), !machine.keyboard.anyKeyDown,
+              machine.disk.motorOn(at: machine.cpu.cycles) else { return }
         let deadline = mediaTime() + 0.012
-        while !paused, machine.disk.motorOn(at: machine.cpu.cycles), mediaTime() < deadline {
+        while !paused, !machine.keyboard.anyKeyDown, machine.disk.motorOn(at: machine.cpu.cycles),
+              mediaTime() < deadline {
             if sound, machine.clicks?.isEmpty == false { return }
             run(Apple2Machine.cyclesPerFrame)
         }
@@ -264,6 +279,35 @@ public final class Apple2 {
     /// Push button `n` (0-2) down or up.
     public func setButton(_ n: Int, pressed: Bool) {
         machine.gamePort.buttons[n] = pressed
+    }
+
+    // MARK: the mouse
+
+    /// The mouse moved by (dx, dy) of the card's counts, y down; fractions
+    /// are kept for the next move.  Nothing while there's no card (`mouse`).
+    public func moveMouse(dx: Double, dy: Double) {
+        guard mouse else { return }
+        mouseRemainder.x += dx
+        mouseRemainder.y += dy
+        let x = Int(mouseRemainder.x), y = Int(mouseRemainder.y)    // toward zero
+        guard x != 0 || y != 0 else { return }
+        mouseRemainder.x -= Double(x)
+        mouseRemainder.y -= Double(y)
+        machine.moveMouse(dx: x, dy: y)
+    }
+
+    /// The mouse's button down or up (while there's a card, `mouse`).
+    public func mouseButton(down: Bool) {
+        guard mouse else { return }
+        machine.mouseButton(down: down)
+    }
+
+    /// The mouse's button clicked: down, and up a moment later (a tap).
+    public func clickMouse() {
+        mouseButton(down: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.mouseButton(down: false)
+        }
     }
 
     /// Types `text` key by key, as fast as the program takes them.

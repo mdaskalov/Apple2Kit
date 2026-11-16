@@ -92,6 +92,21 @@ import Testing
         #expect(m.video.description == "80-column text")
     }
 
+    @Test func mouseTextOnTheEnhancedIIe() {
+        for model in [Apple2Machine.Model.apple2e, .apple2eEnhanced] {
+            let m = iie(model)
+            _ = m.cpu.read(0xC051)                          // text
+            set(m, 0xC00F)                                  // ALTCHARSET
+            m.cpu.write(0x0400, 0x40)                       // closed apple, or inverse @
+            let row0 = m.screenPixels(style: .color)[0 ..< 14]
+            if model == .apple2eEnhanced {                  // ....#.. as it is
+                #expect(row0.indices.allSatisfy { row0[$0] == ($0 / 2 == 4 ? Screen.white : Screen.black) })
+            } else {                                        // @'s ..###.. inverse
+                #expect(row0.indices.allSatisfy { row0[$0] == ((2 ... 4).contains($0 / 2) ? Screen.black : Screen.white) })
+            }
+        }
+    }
+
     @Test func doubleHiresColours() {
         let m = iie()
         for s: UInt16 in [0xC050, 0xC052, 0xC057, 0xC05E] { _ = m.cpu.read(s) }

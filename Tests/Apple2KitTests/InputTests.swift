@@ -113,4 +113,32 @@ import Testing
         try call(.serveMouse)
         #expect(m.cpu.p & 1 == 1)                           // no interrupt of the mouse's
     }
+
+    /// The card's ROM page stays in its slot through a power cycle (a disk
+    /// booted), where programs look for the card.
+    @Test func mouseCardAfterPowerOn() {
+        let m = Apple2Machine(model: .apple2e, rom: nil, diskROM: nil)
+        m.mouseEnabled = true
+        m.powerOn()
+        #expect(m.cpu.mem[0xC405] == 0x38 && m.cpu.mem[0xC40C] == 0x20 && m.cpu.mem[0xC4FB] == 0xD6)
+    }
+
+    /// The host's movements through `Apple2`: none without the card, the
+    /// fractions of a count kept for the next.
+    @MainActor
+    @Test func hostMouse() throws {
+        let apple = Apple2(model: .apple2e, roms: .none)
+        apple.moveMouse(dx: 10, dy: 10)
+        apple.mouseButton(down: true)
+        #expect(apple.machine.mouse.x == 0 && !apple.machine.mouse.button)    // no card
+        apple.mouse = true
+        apple.machine.cpu.a = 1
+        try apple.machine.cpu.call(MouseCard.Call.setMouse.entry)
+        apple.moveMouse(dx: 0.6, dy: 2.5)
+        #expect(apple.machine.mouse.x == 0 && apple.machine.mouse.y == 2)
+        apple.moveMouse(dx: 0.6, dy: 0.5)
+        #expect(apple.machine.mouse.x == 1 && apple.machine.mouse.y == 3)
+        apple.mouseButton(down: true)
+        #expect(apple.machine.mouse.button)
+    }
 }

@@ -109,10 +109,28 @@ struct ScreenRepresentable: UIViewRepresentable {
 /// its layer.  Keys: a hardware keyboard's (`pressesBegan`, ⌥ the push
 /// buttons), the on-screen keyboard's (`UIKeyInput`, a tap shows or hides
 /// it), the Siri Remote's on tvOS.
+///
+/// With the mouse card in (not on tvOS), the touches and the pointer are the
+/// mouse: a finger or the pointer moved moves it, a tap or click clicks, a
+/// touch held then moved – or a click held – drags (the button down); a
+/// two-finger tap shows or hides the on-screen keyboard.  The pointer is
+/// hidden over the screen, the Apple's own showing.
 final class ScreenUIView: UIView, UIKeyInput {
     var emulator: Apple2
     var style: Screen.Style
     private var link: CADisplayLink?
+    #if !os(tvOS)
+    /// The pan's touch is the pointer's, a click held: the button down.
+    private var panHoldsButton = false
+    /// Where the hover, or the held touch, was last (the view's points).
+    private var lastHover: CGPoint?
+    private var lastHold: CGPoint?
+    /// `emulator.mouse` as the pointer's style was last set.
+    private var mouseShown = false
+    #if os(iOS)
+    private var pointer: UIPointerInteraction?
+    #endif
+    #endif
 
     init(emulator: Apple2, style: Screen.Style) {
         self.emulator = emulator
@@ -124,7 +142,7 @@ final class ScreenUIView: UIView, UIKeyInput {
         layer.magnificationFilter = .nearest
         layer.minificationFilter = .linear
         #if !os(tvOS)
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+        addMouseGestures()
         #endif
     }
 
@@ -147,16 +165,109 @@ final class ScreenUIView: UIView, UIKeyInput {
     }
 
     @objc private func displayFrame(_ link: CADisplayLink) {
+        #if !os(tvOS)
+        if mouseShown != emulator.mouse { mouseCardChanged() }
+        #endif
         if let image = emulator.frame(at: link.targetTimestamp, style: style) { layer.contents = image }
     }
 
-    @objc private func tapped() {
+    @objc private func toggleKeyboard() {
         if isFirstResponder { resignFirstResponder() } else { becomeFirstResponder() }
     }
 
     override var canBecomeFirstResponder: Bool { true }
     #if os(tvOS)
     override var canBecomeFocused: Bool { true }
+    #endif
+
+    #if !os(tvOS)
+    // MARK: the mouse
+
+    private func addMouseGestures() {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(toggleKeyboard))
+        twoFingerTap.numberOfTouchesRequired = 2
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 0.4
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.require(toFail: hold)               // a touch held is a drag
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:)))
+        for recognizer in [hold, pan, hover] { recognizer.delegate = self }
+        for recognizer in [tap, twoFingerTap, hold, pan, hover] { addGestureRecognizer(recognizer) }
+        #if os(iOS)
+        let pointer = UIPointerInteraction(delegate: self)
+        addInteraction(pointer)
+        self.pointer = pointer
+        #endif
+    }
+
+    /// The card put in or taken out: the pointer shown or hidden, the button up.
+    private func mouseCardChanged() {
+        mouseShown = emulator.mouse
+        lastHover = nil
+        lastHold = nil
+        #if os(iOS)
+        pointer?.invalidate()
+        #endif
+    }
+
+    /// A tap: a click with the mouse card in, else the on-screen keyboard.
+    @objc private func tapped() {
+        if emulator.mouse { emulator.clickMouse() } else { toggleKeyboard() }
+    }
+
+    /// A finger, or the pointer with its button held, moved.
+    @objc private func panned(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            if panHoldsButton { emulator.mouseButton(down: true) }
+            fallthrough
+        case .changed:
+            move(by: pan.translation(in: self))
+            pan.setTranslation(.zero, in: self)
+        default:
+            if panHoldsButton { emulator.mouseButton(down: false) }
+        }
+    }
+
+    /// A touch held: the button down, a drag as it moves, up as it lifts.
+    @objc private func held(_ hold: UILongPressGestureRecognizer) {
+        let point = hold.location(in: self)
+        switch hold.state {
+        case .began:
+            lastHold = point
+            emulator.mouseButton(down: true)
+        case .changed:
+            if let last = lastHold { move(by: CGPoint(x: point.x - last.x, y: point.y - last.y)) }
+            lastHold = point
+        default:
+            lastHold = nil
+            emulator.mouseButton(down: false)
+        }
+    }
+
+    /// The pointer moved over the screen, no button held.
+    @objc private func hovered(_ hover: UIHoverGestureRecognizer) {
+        let point = hover.location(in: self)
+        switch hover.state {
+        case .began:
+            lastHover = point
+        case .changed:
+            if let last = lastHover { move(by: CGPoint(x: point.x - last.x, y: point.y - last.y)) }
+            lastHover = point
+        default:
+            lastHover = nil
+        }
+    }
+
+    /// A movement in the view's points, as far on the Apple's screen as
+    /// on the view: 280 counts across it.
+    private func move(by delta: CGPoint) {
+        guard bounds.width > 0 else { return }
+        let scale = 280 / bounds.width
+        emulator.moveMouse(dx: delta.x * scale, dy: delta.y * scale)
+    }
     #endif
 
     // MARK: hardware keys
@@ -293,4 +404,28 @@ final class ScreenUIView: UIView, UIKeyInput {
     override var inputAccessoryView: UIView? { keyBar }
     #endif
 }
+
+#if !os(tvOS)
+extension ScreenUIView: UIGestureRecognizerDelegate {
+    /// The mouse's gestures only while the card is in.
+    override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        if recognizer.delegate === self { return emulator.mouse }
+        return super.gestureRecognizerShouldBegin(recognizer)
+    }
+
+    func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if recognizer is UIPanGestureRecognizer { panHoldsButton = touch.type == .indirectPointer }
+        return true
+    }
+}
+#endif
+
+#if os(iOS)
+extension ScreenUIView: UIPointerInteractionDelegate {
+    /// Hidden over the screen while the card is in: the Apple shows its own.
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        emulator.mouse ? .hidden() : nil
+    }
+}
+#endif
 #endif
