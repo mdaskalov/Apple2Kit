@@ -237,10 +237,6 @@ cd Data
 
 ## Adding things
 
-**MouseText.** The enhanced //e's 32 icons at $40‑$5F with ALTCHARSET
-need their glyphs in `Charset` (the font has none); the firmware and
-some programs (menus, windows) draw with them.
-
 **Delete as $7F** on the //e (the Mac's delete key is ← now, $08, as most
 programs want for backspace).
 
