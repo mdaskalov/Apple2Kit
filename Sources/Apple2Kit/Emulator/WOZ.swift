@@ -14,8 +14,10 @@ import Foundation
 ///       META   tab-separated key/value lines (kept as it is)
 ///
 /// The emulator reads nibbles, so each track's bits go through the Disk II's
-/// latch (`nibbles(bits:count:)`) once, when the file is read.  Saving
-/// writes a WOZ2 file: unwritten tracks keep their bits as they were.
+/// latch (`nibbles(bits:count:)`) once, when the file is read, keeping each
+/// nibble's length in bits.  Saving writes a WOZ2 file: unwritten tracks
+/// keep their bits as they were, written ones are their nibbles at their
+/// lengths.
 nonisolated struct WOZ {
     static let quarterTracks = 160
     static let blockSize = 512
@@ -158,45 +160,60 @@ nonisolated struct WOZ {
     // MARK: bits ⇄ nibbles
 
     /// The nibbles the Disk II reads off a track of `count` bits going
-    /// round: the latch shifts bits in, a byte is done when bit 7 is set,
-    /// and the next starts at the next 1 bit (zeros between bytes, as after
-    /// a 10-bit self-sync FF, are passed over).  It reads one turn to fall
-    /// into step, then one more turn is the track.  Empty: no byte in it.
-    static func nibbles(bits: [UInt8], count: Int) -> [UInt8] {
-        guard count > 0 else { return [] }
+    /// round, and each one's length in bits: its 8, and the 0s after it
+    /// (2 after a self-sync FF).  The latch shifts bits in, a byte is done
+    /// when bit 7 is set, and the next starts at the next 1 bit.  It reads
+    /// one turn to fall into step, then one more turn is the track.  Empty:
+    /// no byte in it.
+    static func nibbles(bits: [UInt8], count: Int) -> (nibbles: [UInt8], lengths: [UInt8]) {
+        guard count > 0 else { return ([], []) }
         @inline(__always) func bit(_ i: Int) -> UInt8 {
             let j = i % count
             return bits[j >> 3] >> (7 - j & 7) & 1
         }
         var latch: UInt8 = 0
         var i = 0
-        /// The next byte, from bit `i` on; nil after two turns with none.
-        func next() -> UInt8? {
+        /// The next byte from bit `i` on, and the bit it starts at; nil
+        /// after two turns with none.
+        func next() -> (nibble: UInt8, start: Int)? {
             let limit = i + 2 * count
+            var start = i
             while i < limit {
                 let b = bit(i)
                 i += 1
-                if latch == 0 && b == 0 { continue }
+                if latch == 0 {
+                    guard b == 1 else { continue }
+                    start = i - 1
+                }
                 latch = latch << 1 | b
                 if latch & 0x80 != 0 {
                     defer { latch = 0 }
-                    return latch
+                    return (latch, start)
                 }
             }
             return nil
         }
         // one turn to fall into step, then the byte boundaries repeat
-        while i < count { guard next() != nil else { return [] } }
-        let start = i
-        var out = [UInt8]()
-        out.reserveCapacity(count / 8)
-        while i < start + count, let n = next() { out.append(n) }
-        return out
+        while i < count { guard next() != nil else { return ([], []) } }
+        let turn = i
+        var nibbles = [UInt8](), starts = [Int]()
+        nibbles.reserveCapacity(count / 8)
+        starts.reserveCapacity(count / 8)
+        while i < turn + count, let n = next() {
+            nibbles.append(n.nibble)
+            starts.append(n.start)
+        }
+        guard let first = starts.first else { return ([], []) }
+        let lengths = starts.indices.map { k in
+            let next = k + 1 < starts.count ? starts[k + 1] : first + count
+            return UInt8(max(8, min(255, next - starts[k])))
+        }
+        return (nibbles, lengths)
     }
 
-    /// Nibbles as bits: each FF as a 10-bit self-sync byte (two 0s after
-    /// it), which reads the same and puts the latch in step after a run.
-    static func bits(nibbles: [UInt8]) -> Track {
+    /// Nibbles as bits: each one's 8, then 0s to its length (`lengths`,
+    /// 8 when nil): a self-sync FF is 10 long.
+    static func bits(nibbles: [UInt8], lengths: [UInt8]? = nil) -> Track {
         var bytes = [UInt8](), acc: UInt32 = 0, n = 0, count = 0
         bytes.reserveCapacity(nibbles.count * 9 / 8 + 1)
         func put(_ value: UInt32, _ width: Int) {
@@ -208,8 +225,13 @@ nonisolated struct WOZ {
                 bytes.append(UInt8(truncatingIfNeeded: acc >> n))
             }
         }
-        for v in nibbles {
-            if v == 0xFF { put(0xFF << 2, 10) } else { put(UInt32(v), 8) }
+        for (k, v) in nibbles.enumerated() {
+            put(UInt32(v), 8)
+            var zeros = Int(lengths?[k] ?? 8) - 8
+            while zeros > 0 {
+                put(0, min(zeros, 16))
+                zeros -= 16
+            }
         }
         if n > 0 { bytes.append(UInt8(truncatingIfNeeded: acc << (8 - n))) }
         return Track(bytes: bytes, count: count)

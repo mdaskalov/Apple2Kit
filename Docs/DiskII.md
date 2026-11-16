@@ -124,7 +124,8 @@ They become nibbles as the card's latch makes them (`WOZ.nibbles`): bits
 shift in, a byte is done when bit 7 is set, and the next byte starts at the
 next 1 bit, so the 0s after a 10‑bit self‑sync FF are skipped and the latch
 falls into step on a run of them, wherever the track's bits start. One turn
-is read to fall into step, the next turn is the track. A track with no
+is read to fall into step, the next turn is the track, with each nibble's
+length in bits (`bitLengths`, for writing back). A track with no
 bytes in it is unformatted. Copy protection in the nibbles (custom address
 marks, 18‑sector tracks, half tracks, nibble counts) survives; what lives
 between the nibbles (sync byte lengths, weak bits) does not (*Timing*).
@@ -172,8 +173,14 @@ decodes, then stores the sectors back in the image's order. Sectors that
 don't decode keep their old data. `.nib` images are saved as the nibbles.
 `.woz` images are saved as WOZ2 (a WOZ1 file too: its fixed 6646‑byte
 tracks have no room for a written one): tracks not written keep their bits
-as they were, written ones are their nibbles as bits, each FF as a 10‑bit
-self‑sync byte. INFO and META are kept, the TMAP is the image's (with
+as they were, written ones are their nibbles as bits, each at its length.
+A nibble read keeps the length it had (its 8 bits and the 0s after it). A
+nibble written is as long as the time until the next write, as on the card:
+DOS writes sync FFs 40 cycles apart (10 bits) and fields 32 apart (8 bits).
+This matters: an FF inside a field (the volume, 254, is `FF FE` in 4‑and‑4)
+saved as 10 bits stays in the latch 8 µs longer, and RWTS, reading the
+second nibble of a pair a few cycles later, can take the FF twice: the
+address checksum fails at random and a bit‑level emulator gives `I/O ERROR`. INFO and META are kept, the TMAP is the image's (with
 tracks written where there were none), WRIT and FLUX are dropped, and the
 CRC is written. A `.woz` whose INFO says write protected stays so: DOS says
 `WRITE PROTECTED`.

@@ -48,6 +48,8 @@ public nonisolated final class DiskII {
     /// The latch's nibble was read with bit 7 set: read again soon, it is
     /// shifting (bit 7 clear).
     private var latchRead = false
+    /// The last access to the latch wrote a nibble.
+    private var writing = false
 
     var drive: Drive { drives[selected] }
 
@@ -75,7 +77,7 @@ public nonisolated final class DiskII {
             (theirs.position, theirs.writeProtected) = (mine.position, mine.writeProtected)
         }
         (c.selected, c.motor, c.motorStops, c.now) = (selected, motor, motorStops, now)
-        (c.q6, c.q7, c.latch, c.latchCycle, c.latchRead) = (q6, q7, latch, latchCycle, latchRead)
+        (c.q6, c.q7, c.latch, c.latchCycle, c.latchRead, c.writing) = (q6, q7, latch, latchCycle, latchRead, writing)
         return c
     }
 
@@ -87,6 +89,7 @@ public nonisolated final class DiskII {
         q7 = false
         selected = 0
         latchRead = false
+        writing = false
     }
 
     /// An access to switch `n` (0-15) of the card at CPU cycle `cycles`: a
@@ -117,6 +120,7 @@ public nonisolated final class DiskII {
     private func readNibble() -> UInt8 {
         let d = drive
         guard motorOn, let image = d.image else { return latch }
+        writing = false
         let elapsed = now &- latchCycle
         if latchRead && elapsed < DiskII.cyclesPerNibble {
             latchRead = false
@@ -140,7 +144,15 @@ public nonisolated final class DiskII {
         guard motorOn, d.image != nil else { return latch }
         // no local copy of the image: the write would copy the track
         d.position %= d.image!.track(atHalfTrack: d.halfTrack).count
-        if !d.writeProtected { d.image!.write(latch, halfTrack: d.halfTrack, position: d.position) }
+        if !d.writeProtected {
+            // the nibble before was as long as the time since it: 32 cycles,
+            // 8 bits; 40 a self-sync FF of 10 (a .woz keeps it)
+            if writing {
+                d.image!.setLength(Int((now &- latchCycle + 2) / 4), halfTrack: d.halfTrack, position: d.position - 1)
+            }
+            d.image!.write(latch, halfTrack: d.halfTrack, position: d.position)
+        }
+        writing = true
         d.position += 1
         latchCycle = now
         latchRead = false

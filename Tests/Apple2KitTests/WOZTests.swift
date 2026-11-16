@@ -11,7 +11,17 @@ import Testing
 
     /// The tracks of `sectors` as bits, the self-sync FFs 10 bits long.
     static let trackBits: [WOZ.Track] = (0 ..< DiskImage.tracks).map {
-        WOZ.bits(nibbles: physical(DiskImage.nibblize(track: $0, of: sectors, order: .dos)))
+        let nibbles = physical(DiskImage.nibblize(track: $0, of: sectors, order: .dos))
+        return WOZ.bits(nibbles: nibbles, lengths: syncLengths(nibbles))
+    }
+
+    /// The lengths DOS writes: 10 bits for the FFs of a gap (a run of them),
+    /// 8 for the rest, an FF in a field too (volume 254 is FF FE).
+    static func syncLengths(_ nibbles: [UInt8]) -> [UInt8] {
+        nibbles.indices.map { k in
+            let ff = { (i: Int) in nibbles[(i + nibbles.count) % nibbles.count] == 0xFF }
+            return ff(k) && (ff(k - 1) || ff(k + 1)) ? 10 : 8
+        }
     }
 
     /// A nibblized track as long as a real one (about 51000 bits): runs of
@@ -113,7 +123,7 @@ import Testing
         bools = Array(bools[1237...] + bools[..<1237])
         var bytes = [UInt8](repeating: 0, count: (t.count + 7) / 8)
         for (i, b) in bools.enumerated() { bytes[i / 8] |= b << (7 - i % 8) }
-        let nibbles = WOZ.nibbles(bits: bytes, count: t.count)
+        let nibbles = WOZ.nibbles(bits: bytes, count: t.count).nibbles
         #expect(DiskImage.denibblize(nibbles, track: 17).count == 16)
     }
 
@@ -140,7 +150,10 @@ import Testing
         var changed = Self.sectors
         for i in 5 * DiskImage.trackSize ..< 6 * DiskImage.trackSize { changed[i] ^= 0x5A }
         let track5 = Self.physical(DiskImage.nibblize(track: 5, of: changed, order: .dos))
-        for (i, n) in track5.enumerated() { image.write(n, halfTrack: 10, position: i) }
+        for (i, (n, bits)) in zip(track5, Self.syncLengths(track5)).enumerated() {
+            image.write(n, halfTrack: 10, position: i)
+            image.setLength(Int(bits), halfTrack: 10, position: i)
+        }
         let track36 = DiskImage.nibblize(track: 36 % 35, of: Self.sectors, order: .dos)
         for (i, n) in track36.prefix(6400).enumerated() { image.write(n, halfTrack: 72, position: i) }
         #expect(image.isModified)
@@ -156,6 +169,41 @@ import Testing
         #expect(woz.tracks[4].bytes == Self.trackBits[4].bytes)
         #expect(woz.map[143 ... 145].allSatisfy { $0 != WOZ.noTrack })
         #expect(saved.track(atHalfTrack: 72) != DiskImage.unformatted)
+        // the written track: its nibbles at the lengths written
+        #expect(woz.tracks[5].count == Self.trackBits[5].count)
+    }
+
+    /// Nibbles a read finds keep their lengths: an address field's FF (the
+    /// volume) stays 8 bits, the gaps' FFs 10.
+    @Test func lengthsAsRead() throws {
+        let t = Self.trackBits[3]
+        let (nibbles, lengths) = WOZ.nibbles(bits: t.bytes, count: t.count)
+        let k = try #require(nibbles.indices.first { nibbles[$0 ..< $0 + 3].elementsEqual([0xD5, 0xAA, 0x96]) })
+        #expect(nibbles[k + 3] == 0xFF && lengths[k + 3] == 8)
+        #expect(lengths[k - 1] == 10 && nibbles[k - 1] == 0xFF)
+        #expect(WOZ.bits(nibbles: nibbles, lengths: lengths).count == t.count)
+    }
+
+    /// The controller writing as DOS does, a sync FF 40 cycles before the
+    /// next nibble, data 32 apart: the saved bits have FFs of 10 bits and
+    /// the rest of 8.
+    @Test func writeTiming() throws {
+        let disk = DiskII()
+        disk.insert(try DiskImage(name: "test.woz", data: Self.woz2()), drive: 0)
+        _ = disk.access(9, write: false, value: 0, cycles: 0)          // motor on
+        _ = disk.access(0xF, write: false, value: 0, cycles: 10)       // write mode
+        var cycle: UInt64 = 1000
+        for (value, gap) in [(0xFF, 40), (0xFF, 40), (0xFF, 40), (0x96, 32), (0x97, 32), (0x9A, 32)] as [(UInt8, UInt64)] {
+            _ = disk.access(0xD, write: true, value: value, cycles: cycle - 4)   // load
+            _ = disk.access(0xC, write: false, value: 0, cycles: cycle)          // shift out
+            cycle += gap
+        }
+        var image = try #require(disk.drives[0].image)
+        let woz = try WOZ(image.fileData())
+        let read = WOZ.nibbles(bits: woz.tracks[0].bytes, count: woz.tracks[0].count)
+        let (nibbles, lengths) = (read.nibbles + read.nibbles, read.lengths + read.lengths)   // round
+        let k = try #require(read.nibbles.indices.first { nibbles[$0 ..< $0 + 5].elementsEqual([0xFF, 0xFF, 0xFF, 0x96, 0x97]) })
+        #expect(Array(lengths[k ..< k + 5]) == [10, 10, 10, 8, 8])
     }
 
     @Test func crc32() {

@@ -64,6 +64,9 @@ public nonisolated struct DiskImage {
     private var sectorData: [UInt8]
     /// The `.woz` file: its tracks' bits as they were read or last saved.
     private var woz: WOZ?
+    /// For a `.woz`, by track as `nibbles`: each nibble's length in bits (8,
+    /// 10 for a self-sync FF), as read or as written.
+    private var bitLengths: [[UInt8]] = []
 
     public init(name: String, data: [UInt8]) throws {
         self.name = name
@@ -73,7 +76,9 @@ public nonisolated struct DiskImage {
             let woz = try WOZ(data)
             format = .woz
             isWriteProtected = woz.isWriteProtected
-            nibbles = woz.tracks.map { WOZ.nibbles(bits: $0.bytes, count: $0.count) }
+            let tracks = woz.tracks.map { WOZ.nibbles(bits: $0.bytes, count: $0.count) }
+            nibbles = tracks.map(\.nibbles)
+            bitLengths = tracks.map(\.lengths)
             let readable = nibbles.map { !$0.isEmpty }
             trackMap = woz.map.map { $0 == WOZ.noTrack || !readable[Int($0)] ? nil : Int($0) }
             self.woz = woz
@@ -106,8 +111,9 @@ public nonisolated struct DiskImage {
     }
 
     /// Writes `value` at nibble `position` of the track at half track
-    /// `halfTrack` (the Disk II writing).  Where there is no track, the head
-    /// makes one, which its neighbouring quarter tracks see too (as WOZ has it).
+    /// `halfTrack` (the Disk II writing), 8 bits long (`setLength`).  Where
+    /// there is no track, the head makes one, which its neighbouring quarter
+    /// tracks see too (as WOZ has it).
     mutating func write(_ value: UInt8, halfTrack: Int, position: Int) {
         let q = 2 * halfTrack
         let index: Int
@@ -116,12 +122,24 @@ public nonisolated struct DiskImage {
         } else {
             index = nibbles.count
             nibbles.append(DiskImage.unformatted)
+            if format == .woz { bitLengths.append([UInt8](repeating: 8, count: DiskImage.unformatted.count)) }
             for n in max(0, q - 1) ... min(DiskImage.quarterTracks - 1, q + 1) where trackMap[n] == nil {
                 trackMap[n] = index
             }
         }
-        nibbles[index][position % nibbles[index].count] = value
+        let p = position % nibbles[index].count
+        nibbles[index][p] = value
+        if format == .woz { bitLengths[index][p] = 8 }
         dirtyTracks.insert(index)
+    }
+
+    /// The nibble written at `position` of half track `halfTrack` is `bits`
+    /// long (8-10): the next one came that late (a self-sync FF is written
+    /// 40 cycles before the next: 10 bits).  Kept by a `.woz`.
+    mutating func setLength(_ bits: Int, halfTrack: Int, position: Int) {
+        guard format == .woz, let index = trackMap[2 * halfTrack] else { return }
+        let count = bitLengths[index].count
+        bitLengths[index][(position % count + count) % count] = UInt8(max(8, min(10, bits)))
     }
 
     /// What the head reads where there is no track: noise, the same each
@@ -136,7 +154,8 @@ public nonisolated struct DiskImage {
 
     /// The image in its file's format, with what was written: the nibble
     /// tracks as they are for `.nib`, written tracks as bits for `.woz`
-    /// (saved as WOZ2), else the sectors decoded from them.
+    /// (saved as WOZ2, each nibble at its length), else the sectors decoded
+    /// from them.
     public mutating func fileData() -> [UInt8] {
         defer { dirtyTracks = [] }
         switch format {
@@ -145,7 +164,7 @@ public nonisolated struct DiskImage {
         case .woz:
             guard var woz else { return [] }
             for index in dirtyTracks.sorted() {
-                let bits = WOZ.bits(nibbles: nibbles[index])
+                let bits = WOZ.bits(nibbles: nibbles[index], lengths: bitLengths[index])
                 if index < woz.tracks.count { woz.tracks[index] = bits } else { woz.tracks.append(bits) }
             }
             woz.map = trackMap.map { i in i.flatMap { $0 < WOZ.quarterTracks ? UInt8($0) : nil } ?? WOZ.noTrack }
