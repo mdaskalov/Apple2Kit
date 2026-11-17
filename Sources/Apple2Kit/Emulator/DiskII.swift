@@ -4,14 +4,17 @@
 /// latch.  The boot ROM (P5, 256 bytes at $Cn00) is the machine's to map
 /// (`Apple2Machine`).
 ///
-/// Timing, simplified (Docs/DiskII.md): a nibble reads with bit 7 set once,
-/// then, read again within 32 cycles, without (the latch shifting); the next
-/// read takes the next nibble.  Code reading in a tight loop gets the disk's
-/// nibbles faster than a real drive turns, never missing one; code away for
-/// longer finds the disk turned on by the time it was away (32 cycles a
-/// nibble).  After $C0n8 the motor runs on for a second, as the card's timer
-/// keeps it.  Code that counts the cycles between nibbles (some copy
-/// protection) can fail.
+/// Timing (Docs/DiskII.md).  A `.woz` is read bit by bit as the disk
+/// turns with the CPU's clock (a bit every 4 cycles, or the image's bit
+/// timing): the bits go through the shift register into the latch as the
+/// card's sequencer has them, so a nibble is there while the latch holds it
+/// (through the 0s after it), $C0nD clears the register ("E7 bitstream"
+/// copy protection), and where the disk has no 1 bits for a while the
+/// drive reads random ones (weak bits).  A `.dsk`/`.nib` has no bits
+/// between its nibbles and is read a nibble at a time, 32 cycles each: the
+/// first read of a nibble has bit 7 set, later ones see it shifting (bit 7
+/// clear).  After $C0n8 the motor runs on for a second, as the card's timer
+/// keeps it.
 public nonisolated final class DiskII {
     public final class Drive {
         public internal(set) var image: DiskImage?
@@ -19,8 +22,10 @@ public nonisolated final class DiskII {
         var halfTrack = 0
         /// The stepper motor's four magnets (bit n = phase n on).
         var phases: UInt8 = 0
-        /// The next nibble under the head.
+        /// The next nibble under the head; a `.woz`: the nibble the head is
+        /// in, `offset` bits into it (its 8, then the 0s after it).
         var position = 0
+        var offset = 0
         var writeProtected = false
 
         public var track: Int { halfTrack / 2 }
@@ -43,13 +48,24 @@ public nonisolated final class DiskII {
     private var q6 = false, q7 = false
     /// The data register: the last nibble read, the next to be written.
     private var latch: UInt8 = 0
-    /// The cycle the latch took its nibble.
+    /// The cycle the latch took its nibble, and eighths of a cycle after it
+    /// (bits of 3.5 µs, `DiskImage.bitTiming`).
     private var latchCycle: UInt64 = 0
+    private var latchEighths: UInt64 = 0
     /// The latch's nibble was read with bit 7 set: read again soon, it is
     /// shifting (bit 7 clear).
     private var latchRead = false
     /// The last access to the latch wrote a nibble.
     private var writing = false
+    // A `.woz` (`readWOZ`): the sequencer's shift register; how many more
+    // bits the latch holds its nibble; the last 4 bits under the head; the
+    // time the next bit is under it, in eighths of a cycle.
+    private var shift: UInt8 = 0
+    private var hold = 0
+    private var window: UInt8 = 0
+    private var bitTime: UInt64 = 0
+    /// For weak bits (xorshift).
+    private var random: UInt64 = 0x9E37_79B9_7F4A_7C15
 
     var drive: Drive { drives[selected] }
 
@@ -74,10 +90,11 @@ public nonisolated final class DiskII {
         let c = DiskII()
         for (mine, theirs) in zip(drives, c.drives) {
             (theirs.image, theirs.halfTrack, theirs.phases) = (mine.image, mine.halfTrack, mine.phases)
-            (theirs.position, theirs.writeProtected) = (mine.position, mine.writeProtected)
+            (theirs.position, theirs.offset, theirs.writeProtected) = (mine.position, mine.offset, mine.writeProtected)
         }
         (c.selected, c.motor, c.motorStops, c.now) = (selected, motor, motorStops, now)
         (c.q6, c.q7, c.latch, c.latchCycle, c.latchRead, c.writing) = (q6, q7, latch, latchCycle, latchRead, writing)
+        (c.latchEighths, c.shift, c.hold, c.window, c.bitTime, c.random) = (latchEighths, shift, hold, window, bitTime, random)
         return c
     }
 
@@ -90,6 +107,8 @@ public nonisolated final class DiskII {
         selected = 0
         latchRead = false
         writing = false
+        shift = 0
+        hold = 0
     }
 
     /// An access to switch `n` (0-15) of the card at CPU cycle `cycles`: a
@@ -103,7 +122,15 @@ public nonisolated final class DiskII {
         case 0xA: selected = 0
         case 0xB: selected = 1
         case 0xC: q6 = false
-        case 0xD: q6 = true
+        case 0xD:
+            // read mode: the sequencer to state 0, the register cleared, the
+            // latch the write-protect switch (a `.woz`: the next 1 bit
+            // starts a nibble, wherever it is)
+            if !q7 && motorOn, let image = drive.image, image.format == .woz {
+                _ = readWOZ()
+                (shift, hold, latch) = (0, 0, drive.writeProtected ? 0xFF : 0)
+            }
+            q6 = true
         case 0xE: q7 = false
         default: q7 = true
         }
@@ -120,28 +147,121 @@ public nonisolated final class DiskII {
     private func readNibble() -> UInt8 {
         let d = drive
         guard motorOn, let image = d.image else { return latch }
+        if image.format == .woz { return readWOZ() }
         writing = false
-        let elapsed = now &- latchCycle
-        if latchRead && elapsed < DiskII.cyclesPerNibble {
-            latchRead = false
-            return latch & 0x7F
-        }
         let nibbles = image.track(atHalfTrack: d.halfTrack)
-        if elapsed >= 2 * DiskII.cyclesPerNibble {
-            d.position += Int(min(elapsed / DiskII.cyclesPerNibble, UInt64(nibbles.count))) - 1
-        }
+        let lengths = image.lengths(atHalfTrack: d.halfTrack)
         d.position %= nibbles.count
-        latch = nibbles[d.position]
-        d.position += 1
-        latchCycle = now
+        // in eighths of a cycle, the time from nibble i - 1 to nibble i: a
+        // nibble is in when its 8th bit is, the 0s after it delay the next
+        let timing = UInt64(image.bitTiming)
+        func eighths(_ i: Int) -> UInt64 {
+            UInt64(lengths?[(i + nibbles.count - 1) % nibbles.count] ?? 8) * timing
+        }
+        var elapsed = (now &- latchCycle) * 8 &- latchEighths
+        if elapsed >= 64 * 8 * DiskII.cyclesPerNibble {
+            // away for long: whole turns don't matter
+            let turn = UInt64(lengths?.reduce(0) { $0 + Int($1) } ?? 8 * nibbles.count) * timing
+            elapsed %= turn
+        }
+        // the nibbles that came in since the last one: the latch has the newest
+        var time = now * 8 &- elapsed
+        while elapsed >= eighths(d.position) {
+            let e = eighths(d.position)
+            latch = nibbles[d.position]
+            time &+= e
+            elapsed -= e
+            d.position = (d.position + 1) % nibbles.count
+            latchRead = false
+        }
+        (latchCycle, latchEighths) = (time / 8, time % 8)
+        // The first read of a nibble has bit 7.  So do later ones while the
+        // latch holds it: through the 0s after it, until the next 1 bit
+        // (a bit on); after that it is shifting.  Code can look twice at a
+        // nibble with 0s after it (copy protection does).
+        let held = (UInt64(lengths?[(d.position + nibbles.count - 1) % nibbles.count] ?? 8) - 7) * timing
+        if latchRead && elapsed >= held { return latch & 0x7F }
         latchRead = true
         return latch
+    }
+
+    /// $C0nC in read mode on a `.woz`: the bits that passed the head since
+    /// the last access go through the sequencer, the latch as it is now.
+    /// The head sees 4 bits at a time (the MC3470 amplifier): where they are
+    /// all 0 it has turned its gain up and reads noise, a 1 about 3 times
+    /// in 10 (weak bits, WOZ reference); else it reads the disk, a bit late.
+    /// The register shifts the bits in; when bit 7 is set it is a nibble,
+    /// the latch takes it and holds it through the 0s that follow and 2 bits
+    /// more, the register starts again at the next 1 (AppleWin's
+    /// `DataLatchReadWOZ`).
+    private func readWOZ() -> UInt8 {
+        let d = drive
+        guard motorOn, let image = d.image, let lengths = image.lengths(atHalfTrack: d.halfTrack) else { return latch }
+        let nibbles = image.track(atHalfTrack: d.halfTrack)
+        let timing = UInt64(image.bitTiming)
+        let now8 = now * 8
+        if writing {
+            // back from writing: the head is at the nibble after the last
+            writing = false
+            (d.offset, shift, hold, bitTime) = (0, 0, 0, now8)
+        }
+        d.position %= nibbles.count
+        let count = now8 > bitTime ? (now8 - bitTime) / timing : 0
+        if count > 2048 {
+            // away for long (the motor was off): the last 1024 bits will do
+            var skip = Int(count - 1024) % lengths.reduce(0) { $0 + Int($1) }
+            bitTime = now8 - 1024 * timing
+            while skip > 0 {
+                let rest = min(skip, Int(lengths[d.position]) - d.offset)
+                skip -= rest
+                d.offset += rest
+                if d.offset >= Int(lengths[d.position]) { (d.position, d.offset) = ((d.position + 1) % nibbles.count, 0) }
+            }
+        }
+        while bitTime + timing <= now8 {
+            bitTime += timing
+            let bit = d.offset < 8 ? nibbles[d.position] >> (7 - d.offset) & 1 : 0
+            d.offset += 1
+            if d.offset >= Int(lengths[d.position]) {
+                (d.position, d.offset) = ((d.position + 1) % nibbles.count, 0)
+                // Round once: a real drive's speed varies a little, the next
+                // bit comes up to 2 bits later.  Code that retries a check
+                // a turn later doesn't meet the same timing every time.
+                if d.position == 0 { bitTime += nextRandom() % (2 * timing) }
+            }
+            window = (window << 1 | bit) & 0xF
+            let out: UInt8
+            if window != 0 {
+                out = window >> 1 & 1
+            } else {
+                out = nextRandom() % 10 < 3 ? 1 : 0
+            }
+            shift = shift << 1 | out
+            if hold > 0 {
+                hold -= 1
+                if shift == 0 { hold += 1 }                     // 0s: held on
+            }
+            if hold == 0 {
+                latch = shift
+                if shift & 0x80 != 0 { (hold, shift) = (2, 0) }
+            }
+        }
+        return latch
+    }
+
+    /// The next of a fixed run of pseudo-random numbers (xorshift).
+    private func nextRandom() -> UInt64 {
+        random ^= random << 13
+        random ^= random >> 7
+        random ^= random << 17
+        return random
     }
 
     /// $C0nC in write mode: the latch onto the disk, one nibble on.
     private func writeNibble() -> UInt8 {
         let d = drive
         guard motorOn, d.image != nil else { return latch }
+        if !writing && d.offset > 0 { (d.position, d.offset) = (d.position + 1, 0) }
         // no local copy of the image: the write would copy the track
         d.position %= d.image!.track(atHalfTrack: d.halfTrack).count
         if !d.writeProtected {
@@ -154,7 +274,7 @@ public nonisolated final class DiskII {
         }
         writing = true
         d.position += 1
-        latchCycle = now
+        (latchCycle, latchEighths) = (now, 0)
         latchRead = false
         return latch
     }
@@ -177,6 +297,7 @@ public nonisolated final class DiskII {
             let old = image.track(atHalfTrack: from).count
             let new = image.track(atHalfTrack: d.halfTrack).count
             if old != new { d.position = d.position * new / max(old, 1) }
+            d.offset = 0
         }
     }
 
@@ -185,6 +306,7 @@ public nonisolated final class DiskII {
     public func insert(_ image: DiskImage, drive n: Int) {
         drives[n].image = image
         drives[n].position = 0
+        drives[n].offset = 0
         drives[n].writeProtected = image.isWriteProtected
     }
 

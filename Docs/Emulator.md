@@ -240,11 +240,9 @@ cd Data
 **Delete as $7F** on the //e (the Mac's delete key is ← now, $08, as most
 programs want for backspace).
 
-**Bit‑level disk timing.** `.woz` tracks are read into nibbles once
-(`WOZ.nibbles`), which loses what lives between them: how long each sync
-byte is, weak (random) bits. Protection that times nibbles or reads weak
-bits needs the drive to keep the bit stream and move the latch on by
-elapsed cycles / 4 bits.
+**FLUX tracks** (WOZ 2.1). A `.woz` track is read as bits; one written as
+flux timings is not read yet (the WOZ reference's test set has a ProDOS
+disk with every other track as flux).
 
 **13‑sector disks** (DOS 3.2, `.d13`). These use 5‑and‑3 encoding and need
 the 13‑sector boot ROM.

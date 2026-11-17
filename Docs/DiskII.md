@@ -15,7 +15,7 @@ write throws the switch.
 | 8 / 9 | motor off / on | off: after a second (below) |
 | A / B | drive 1 / drive 2 | |
 | C | Q6L | read mode: the next nibble into the latch, returned. Write mode: the latch onto the disk |
-| D | Q6H | load mode (with Q7H, a write puts the value in the latch) |
+| D | Q6H | load mode (with Q7H, a write puts the value in the latch). With Q7L: clears the shift register (*Bit slips*) |
 | E | Q7L | read mode. With Q6H: write‑protect in bit 7 (no disk counts as protected) |
 | F | Q7H | write mode |
 
@@ -120,48 +120,82 @@ k of a track is ProDOS sectors 2k and 2k+1 (physical
 
 **`.woz`** (`WOZ.swift`, WOZ 1 and 2, 5.25" only; FLUX tracks and the
 CRC are not read). A track is its bits as the drive sees them, about 51000.
-They become nibbles as the card's latch makes them (`WOZ.nibbles`): bits
-shift in, a byte is done when bit 7 is set, and the next byte starts at the
-next 1 bit, so the 0s after a 10‑bit self‑sync FF are skipped and the latch
-falls into step on a run of them, wherever the track's bits start. One turn
-is read to fall into step, the next turn is the track, with each nibble's
-length in bits (`bitLengths`, for writing back). A track with no
-bytes in it is unformatted. Copy protection in the nibbles (custom address
-marks, 18‑sector tracks, half tracks, nibble counts) survives; what lives
-between the nibbles (sync byte lengths, weak bits) does not (*Timing*).
+They are kept as nibbles as the card's latch makes them (`WOZ.nibbles`):
+bits shift in, a byte is done when bit 7 is set, and the next byte starts
+at the next 1 bit, so the 0s after a 10‑bit self‑sync FF are skipped and
+the latch falls into step on a run of them, wherever the track's bits
+start. One turn is read to fall into step, the next turn is the track,
+with each nibble's length in bits (`bitLengths`): its 8 and the 0s after
+it. Nibbles and lengths are the track's bits again, so the drive reads
+them bit by bit (*Timing*). A run of 0s longer than about 250 bits is cut
+to that. A track with no bytes in it is unformatted.
 
 ## Timing: how fast the disk turns
 
-A real disk passes one nibble every 32 CPU cycles. A latch read returns
-whatever is shifting in at that moment, so a valid byte (bit 7 set) is there
-for a while, then partial ones. The emulation is simpler (`readNibble`):
+A real disk passes a bit every 4 µs, about 4 CPU cycles, so a nibble every
+32 (a self‑sync FF with its two 0s: 40). The card's sequencer shifts the
+bits into a register; when bit 7 is set the latch has a nibble, and holds
+it through the 0s that follow and about 2 bits more; then the register
+starts again at the next 1 bit. A read in that time has bit 7 set, later
+ones see a partial byte. The disk turns with the CPU's clock either way.
 
-* A read takes the next nibble and returns it with bit 7 set. Read again
-  within 32 cycles, the same nibble has bit 7 clear (it is shifting). The
-  read after that takes the next nibble.
-* If more than 64 cycles passed since the last nibble, the disk has turned
-  on by `elapsed / 32` nibbles while the code was away.
-* Writes move one nibble per shift.
+**A `.woz`** (`readWOZ`) is read as the card reads it, after AppleWin's
+`DataLatchReadWOZ`. At each access the bits that passed the head since the
+last one (`bitTiming`, in eighths of a cycle) go through the sequencer:
+the latch is what the register made of them. Everything below follows from
+the bits:
 
-So code in a tight loop gets every nibble, faster than a real drive and
-never missing one. Code that waits sees the disk move on. Both matter:
+* **Code that times the disk.** A check that reads a sector, polls the
+  latch for a fixed number of cycles and expects a certain nibble there
+  finds it only if the disk turns no faster than the clock. A check that
+  reads a nibble with 0s after it and reads the latch again a few cycles
+  later finds it still there (an address prologue `D5` then other marks
+  than `AA 96`). A loop too slow for the disk misses nibbles, as on a real
+  drive.
+* **Bit slips.** $C0nD in read mode with the motor on sets the sequencer
+  to state 0: the register is cleared, the hold ends, the latch is the
+  write‑protect switch (AppleWin's `LoadWriteProtect`). The next 1 bit
+  under the head starts a nibble, wherever it is, and the 0s a `.woz` keeps
+  between nibbles can make other nibbles than the track's, until a sync
+  run brings the register back in step. "E7 bitstream" protection checks
+  this: a data field of E7s, some followed by an extra 0 or two. Read in
+  step they are all E7. The check waits for three E7s, touches $C0nD, and
+  expects other nibbles (EE, then a signature of E7, FC and EE), which
+  appear only when the register restarts 3‑7 bits after the third E7
+  (`WOZTests.bitSlip`).
+* **Weak bits.** The drive's amplifier (MC3470) sees 4 bits at a time.
+  Where they are all 0 it has turned its gain up and reads noise: a random
+  1 about 3 times in 10 (the WOZ reference); otherwise it reads the disk,
+  a bit late. A stretch with no flux changes reads differently on each turn,
+  and copy protection checks that it does: a copy that wrote 0s there
+  reads the same (`WOZTests.weakBits`).
+* **The drive's speed.** Each time the track comes round, the next bit
+  comes up to 2 bits late, at random. A real drive's speed varies far more
+  (about 1%). Code that retries a timing check a turn later then meets
+  other timing: an E7 check whose read happened to land early fails every
+  time on a disk that turns with no variation at all.
+* **Bit timing.** A WOZ2's INFO has the disk's bit timing (`bitTiming`, in
+  125 ns; 32 is 4 µs). Some disks were written on a drive turning faster
+  (28, 3.5 µs); their bits come in faster.
+
+**A `.dsk`/`.nib`** (`readNibble`) has no bits between its nibbles and is
+read a nibble at a time: nibble i comes into the latch 32 cycles after
+nibble i − 1. The first read of a nibble has bit 7 set, however late it
+comes (a slow loop never misses one); later reads have it for one bit more
+(4 cycles), then it is shifting (bit 7 clear). Code away for longer finds
+the disk turned on.
+
+Both matter to:
 
 * **The "is the motor on?" check.** Before each call, DOS's RWTS reads the
   latch twice ~26 cycles apart, eight times. If it never changes, the drive
-  is off and RWTS waits about a second for it to spin up. With one nibble
-  per read and no "bit 7 clear" state, the head always stopped right
-  after a sector, at the start of the 44‑FF gap 3. The check read 16 equal
-  FFs and waited every time: a DOS boot took 9 s. With the shifting state,
-  two reads never agree on a spinning disk. The boot now takes 3.8 s
-  emulated, HELLO included.
+  is off and RWTS waits about a second for it to spin up. Without the
+  "bit 7 clear" state, the check could read equal FFs in gap 3 and wait every
+  time (a DOS boot took 9 s). With it, two reads never agree on a spinning
+  disk. DOS 3.3 boots to its prompt in about 5.5 s emulated.
 * **The motor's run‑on.** $C0E8 doesn't stop the motor at once: the card's
   timer keeps it on for about a second (`spinDownCycles` = 1,000,000), and
-  DOS relies on it between calls.
-
-Code that counts cycles between nibbles (some copy protection, nibble
-counting, "E7 bitstreams") can fail.
-That needs bit‑level timing: `.woz` images have the bits, but they are
-read as nibbles.
+  DOS relies on it between calls. Writes move one nibble per shift.
 
 ## Writing
 

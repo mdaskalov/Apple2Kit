@@ -24,11 +24,14 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   1.020484 MHz. Apple //e, unenhanced (6502) and enhanced (65C02), with
   128K (an extended 80‑column card: aux memory, 80 columns), lower case,
   the enhanced //e's MouseText, its firmware (Hardware.md, *The //e*).
-* **Disk II** in slot 6, two drives, nibble level: `.dsk`/`.do`/`.po` (sector
-  order detected), `.nib` and `.woz` (WOZ 1 and 2, read through the latch
-  into nibbles; saved as WOZ2). Reading and writing work. Written disks stay in
-  memory until saved (`diskFileData(drive:)`). The motor keeps spinning for
-  1 s after it is switched off, as on the real card.
+* **Disk II** in slot 6, two drives: `.dsk`/`.do`/`.po` (sector order
+  detected), `.nib` and `.woz` (WOZ 1 and 2; saved as WOZ2). Reading and
+  writing work. Written disks stay in memory until saved
+  (`diskFileData(drive:)`). The motor keeps spinning for 1 s after it is
+  switched off, as on the real card. The disk turns with
+  the CPU's clock; a `.woz` is read bit by bit through the card's
+  sequencer, at its bit timing, with bit slips and weak bits (DiskII.md,
+  *Timing*).
 * **Binaries:** `load(url/bytes, at:, run:)` puts a file (as `Data/dsk.py
   extract` writes it) into memory and, as `BRUN` does, jumps to it; RTS
   returns to the monitor. The address comes from the call, or from the
@@ -60,13 +63,14 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   its fingerprint, and the names as a symbol file for AppleWin's and
   Mariani's debugger. Hooks: Swift where the CPU reaches an address,
   switched on and off by name, the trap bits theirs.
-* **Not there yet:** joystick, bit‑level disk timing,
-  13‑sector disks, game controllers. iOS, tvOS, watchOS and visionOS build, but have only
-  been tried in an app on the Mac so far.
+* **Not there yet:** joystick, 13‑sector disks, game controllers. iOS,
+  tvOS, watchOS and visionOS build, but have only been tried in an app on
+  the Mac so far.
 
 Tested (headless, `swift test`, and in an app): DOS 3.3 master (boot,
 `CATALOG`, `SAVE` then reboot and `LOAD`, also as `.po`, `.nib` and `.woz`),
-copy‑protected `.woz` originals (custom loaders, 18‑sector tracks),
+copy‑protected `.woz` originals (custom loaders, 18‑sector tracks), the
+WOZ reference test images (applesaucefdc.com; two need a //e),
 several boot disks with their own loader; a binary extracted from a disk
 (`dsk.py extract` → `load`, on all of them). The //e: Applesoft, DOS 3.3
 `CATALOG`, a boot disk; both //e's: `PR#3` (80 columns), a 128K double

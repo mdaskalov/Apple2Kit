@@ -67,6 +67,9 @@ public nonisolated struct DiskImage {
     /// For a `.woz`, by track as `nibbles`: each nibble's length in bits (8,
     /// 10 for a self-sync FF), as read or as written.
     private var bitLengths: [[UInt8]] = []
+    /// How long a bit takes to pass the head, in 125 ns: 32 (4 µs), or a
+    /// `.woz`'s optimal bit timing.
+    private(set) var bitTiming = 32
 
     public init(name: String, data: [UInt8]) throws {
         self.name = name
@@ -79,6 +82,7 @@ public nonisolated struct DiskImage {
             let tracks = woz.tracks.map { WOZ.nibbles(bits: $0.bytes, count: $0.count) }
             nibbles = tracks.map(\.nibbles)
             bitLengths = tracks.map(\.lengths)
+            bitTiming = woz.bitTiming
             let readable = nibbles.map { !$0.isEmpty }
             trackMap = woz.map.map { $0 == WOZ.noTrack || !readable[Int($0)] ? nil : Int($0) }
             self.woz = woz
@@ -108,6 +112,14 @@ public nonisolated struct DiskImage {
     /// track there, else an unformatted one (`unformatted`).
     func track(atHalfTrack halfTrack: Int) -> [UInt8] {
         trackMap[2 * halfTrack].map { nibbles[$0] } ?? DiskImage.unformatted
+    }
+
+    /// For a `.woz`, each nibble's length in bits of the track at half track
+    /// `halfTrack` (as `track(atHalfTrack:)`): with them the nibbles are the
+    /// track's bits.  Nil for other images and where there is no track.
+    func lengths(atHalfTrack halfTrack: Int) -> [UInt8]? {
+        guard format == .woz, let index = trackMap[2 * halfTrack] else { return nil }
+        return bitLengths[index]
     }
 
     /// Writes `value` at nibble `position` of the track at half track

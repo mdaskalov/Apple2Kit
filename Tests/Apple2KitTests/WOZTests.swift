@@ -58,7 +58,7 @@ import Testing
         return info
     }
 
-    static func woz2(tracks: [WOZ.Track] = trackBits, writeProtected: Bool = false) -> [UInt8] {
+    static func woz2(tracks: [WOZ.Track] = trackBits, writeProtected: Bool = false, bitTiming: UInt8 = 0) -> [UInt8] {
         var entries = [UInt8](), bits = [UInt8](), block = 3
         for i in 0 ..< 160 {
             guard i < tracks.count else { entries += [UInt8](repeating: 0, count: 8); continue }
@@ -69,8 +69,9 @@ import Testing
             bits += t.bytes + [UInt8](repeating: 0, count: n * 512 - t.bytes.count)
             block += n
         }
-        return header("2") + chunk("INFO", info(version: 2, writeProtected: writeProtected))
-            + chunk("TMAP", tmap) + chunk("TRKS", entries + bits)
+        var info = info(version: 2, writeProtected: writeProtected)
+        info[39] = bitTiming
+        return header("2") + chunk("INFO", info) + chunk("TMAP", tmap) + chunk("TRKS", entries + bits)
     }
 
     static func woz1() -> [UInt8] {
@@ -204,6 +205,131 @@ import Testing
         let (nibbles, lengths) = (read.nibbles + read.nibbles, read.lengths + read.lengths)   // round
         let k = try #require(read.nibbles.indices.first { nibbles[$0 ..< $0 + 5].elementsEqual([0xFF, 0xFF, 0xFF, 0x96, 0x97]) })
         #expect(Array(lengths[k ..< k + 5]) == [10, 10, 10, 8, 8])
+    }
+
+    /// An "E7 bitstream": a run of E7s, some with one or two 0 bits after
+    /// them.  Read in step they are E7s; after $C0nD clears the shift
+    /// register right after the third, the bits read as other nibbles.  The
+    /// check reads as protection code does (a 7-cycle `LDA $C0EC / BPL`
+    /// loop, then a compare) and needs EE, then E7 FC EE E7 FC EE EE FC,
+    /// within 16 nibbles.
+    @Test func bitSlip() throws {
+        let field: [UInt8] = [0xD5, 0xAA, 0xAD] + [UInt8](repeating: 0x96, count: 20) + [UInt8](repeating: 0xE7, count: 40)
+        var fieldLengths = [UInt8](repeating: 8, count: field.count)
+        let slips: [UInt8] = [9, 9, 8, 8, 10, 8, 9, 10, 8, 9, 10, 8, 9, 9]
+        fieldLengths.replaceSubrange(23 ..< 23 + slips.count, with: slips)
+        let nibbles = Self.physical(DiskImage.nibblize(track: 7, of: Self.sectors, order: .dos))
+        let gap = try #require(nibbles.indices.first { nibbles[$0 ..< $0 + 20].allSatisfy { $0 == 0xFF } })
+        var tracks = Self.trackBits
+        tracks[7] = WOZ.bits(nibbles: Array(nibbles[..<(gap + 10)]) + field + nibbles[(gap + 10)...],
+                             lengths: Self.syncLengths(Array(nibbles[..<(gap + 10)])) + fieldLengths
+                                 + Self.syncLengths(Array(nibbles[(gap + 10)...])))
+
+        func check(disk: DiskII) -> [UInt8] {
+            var cycle: UInt64 = 0
+            func read() -> UInt8 { Self.readNibble(disk, at: &cycle) }
+            while read() != 0xD5 {}
+            while read() != 0xE7 {}
+            guard read() == 0xE7, read() == 0xE7 else { return [] }
+            cycle += 8                                              // CMP, BNE, LDA $C0ED
+            _ = disk.access(0xD, write: false, value: 0, cycles: cycle)
+            cycle += 3                                              // BIT
+            for _ in 0 ..< 16 where read() == 0xEE {
+                // each against the signature: CMP table,Y / BNE / INY / CPY / BNE
+                return (0 ..< 8).map { _ in defer { cycle += 9 }; return read() }
+            }
+            return []
+        }
+        let disk = DiskII()
+        disk.insert(try DiskImage(name: "test.woz", data: Self.woz2(tracks: tracks)), drive: 0)
+        _ = disk.access(9, write: false, value: 0, cycles: 0)      // motor on
+        for _ in 0 ..< 28 { _ = disk.access(0, write: false, value: 0, cycles: 0) }
+        // to half track 14 (track 7): phases 1, 2, 3, 0 … on in turn
+        for h in 1 ... 14 {
+            _ = disk.access(2 * ((h - 1) & 3), write: false, value: 0, cycles: 0)
+            _ = disk.access(2 * (h & 3) + 1, write: false, value: 0, cycles: 0)
+        }
+        _ = disk.access(2 * (14 & 3), write: false, value: 0, cycles: 0)
+        #expect(disk.drives[0].track == 7)
+        #expect(check(disk: disk) == [0xE7, 0xFC, 0xEE, 0xE7, 0xFC, 0xEE, 0xEE, 0xFC])
+        // and in step again: the track's sectors read
+        var after = [UInt8]()
+        var cycle: UInt64 = 100_000
+        while after.count < 7000 { after.append(Self.readNibble(disk, at: &cycle)) }
+        #expect(DiskImage.denibblize(after, track: 7).count == 16)
+    }
+
+    /// The next nibble as RWTS reads it: `LDA $C0EC,X / BPL` (7 cycles a
+    /// try), then 4 cycles to compare it.
+    static func readNibble(_ disk: DiskII, at cycle: inout UInt64) -> UInt8 {
+        while true {
+            cycle += 7
+            let v = disk.access(0xC, write: false, value: 0, cycles: cycle)
+            if v & 0x80 != 0 {
+                cycle += 4
+                return v
+            }
+        }
+    }
+
+    /// Track 0 as sync FFs, then D5 AA 96 and distinct nibbles (`marked`);
+    /// `lengths` changes some nibbles' lengths in bits (by index there).
+    static func markedDisk(bitTiming: UInt8 = 0, lengths: [Int: UInt8] = [:]) throws -> (DiskII, [UInt8]) {
+        let marks = Array(DiskImage.writeTable.dropFirst())         // 96 is in the mark
+        let nibbles = [UInt8](repeating: 0xFF, count: 40) + [0xD5, 0xAA, 0x96] + marks
+        var bits = [UInt8](repeating: 10, count: 40) + [UInt8](repeating: 8, count: 3 + marks.count)
+        for (i, l) in lengths { bits[40 + i] = l }
+        var tracks = trackBits
+        tracks[0] = WOZ.bits(nibbles: nibbles, lengths: bits)
+        let disk = DiskII()
+        disk.insert(try DiskImage(name: "test.woz", data: woz2(tracks: tracks, bitTiming: bitTiming)), drive: 0)
+        _ = disk.access(9, write: false, value: 0, cycles: 0)      // motor on
+        return (disk, [0xD5, 0xAA, 0x96] + marks)
+    }
+
+    /// The disk turns with the clock: RWTS's loop gets each nibble once, as
+    /// the disk brings it (32 cycles; 28 at a 3.5 µs bit timing), not
+    /// sooner.  Copy protection times the disk this way.
+    @Test(arguments: [(UInt8(0), UInt64(32)), (28, 28)]) func diskTurnsWithTheClock(timing: UInt8, nibble: UInt64) throws {
+        let (disk, marked) = try Self.markedDisk(bitTiming: timing)
+        var cycle: UInt64 = 1000
+        func read() -> UInt8 { disk.access(0xC, write: false, value: 0, cycles: cycle) }
+        while read() != 0xD5 { cycle += 1 }                         // in as it comes
+        let start = cycle
+        cycle += 4                                                  // CMP / BNE
+        var got = [UInt8]()
+        while cycle < start + 20 * nibble { got.append(Self.readNibble(disk, at: &cycle)) }
+        #expect(got == Array(marked[1 ... 20]))
+    }
+
+    /// The latch holds a nibble through the 0s after it: read again 12
+    /// cycles later, a D5 with three 0s after it is still there (protection
+    /// looks twice), an AA with none has moved on (bit 7 clear).
+    @Test func latchHoldsThroughZeros() throws {
+        let (disk, _) = try Self.markedDisk(lengths: [0: 11])
+        var cycle: UInt64 = 1000
+        func read() -> UInt8 { disk.access(0xC, write: false, value: 0, cycles: cycle) }
+        while read() != 0xD5 { cycle += 1 }
+        cycle += 12
+        #expect(read() == 0xD5)
+        while read() != 0xAA { cycle += 1 }
+        cycle += 12
+        #expect(read() & 0x80 == 0)
+    }
+
+    /// Weak bits: where the disk has no 1 bits for a while the drive reads
+    /// random ones, so a stretch of 20 0s reads differently on each turn
+    /// (copy protection checks that a copy doesn't read the same).  Three
+    /// 0s are no stretch: those read the same every time.
+    @Test(arguments: [(UInt8(28), true), (11, false)]) func weakBits(length: UInt8, differ: Bool) throws {
+        let (disk, _) = try Self.markedDisk(lengths: [3: length])     // 97, ends in a 1
+        var cycle: UInt64 = 1000
+        var turns = Set<[UInt8]>()
+        for _ in 0 ..< 6 {
+            while Self.readNibble(disk, at: &cycle) != 0xD5 {}
+            turns.insert((0 ..< 10).map { _ in Self.readNibble(disk, at: &cycle) })
+        }
+        #expect((turns.count > 1) == differ)
     }
 
     @Test func crc32() {

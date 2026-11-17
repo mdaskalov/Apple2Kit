@@ -39,6 +39,9 @@ nonisolated struct WOZ {
     var meta: [UInt8]?
 
     var isWriteProtected: Bool { info[2] == 1 }
+    /// How long a bit takes to pass the head, in 125 ns (WOZ2's optimal bit
+    /// timing: 32, 4 µs, the Disk II's; some disks were written faster).
+    var bitTiming: Int { info[39] == 0 ? 32 : Int(info[39]) }
 
     enum WOZError: LocalizedError {
         case bad(String)
