@@ -54,6 +54,10 @@ func loadAndRunBinary(model: Apple2.Model) throws {
     let emulator = Apple2(model: .apple2e, roms: .directory(romDirectory))
     try run(emulator, 1)
     #expect(emulator.screenText.contains("Apple ]["))
+    emulator.type("print 6*7\n")             // caps lock is on
+    try run(emulator, 1)
+    #expect(emulator.screenText.contains("PRINT 6*7"))
+    emulator.capsLock = false
     emulator.type("print 6*7\n")
     try run(emulator, 1)
     #expect(emulator.screenText.contains("print 6*7"))

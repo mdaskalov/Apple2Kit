@@ -287,9 +287,10 @@ Applesoft, MouseText in its firmware), both with 128K: an extended
 
   With 80STORE, PAGE2 picks the bank and page 1 is shown
   (`Apple2Machine.displayMode`).
-* **Keyboard:** lower case from the Mac's keys and in `type`. The
-  unenhanced //e's Applesoft takes commands in capitals only (caps lock);
-  the enhanced //e's takes them in lower case too.
+* **Keyboard:** lower case from the Mac's keys and in `type` once
+  `Apple2.capsLock` is off (it starts on). The unenhanced //e's Applesoft
+  takes commands in capitals only; the enhanced //e's takes them in lower
+  case too.
 
 **Aux memory in flat memory.** The CPU's `mem` is 64K, so each page below
 $C000 holds the bank the CPU reads there; the other bank's copy of the

@@ -74,6 +74,12 @@ public final class Apple2 {
     /// program reads the paddles as all the way right and down, and a game
     /// controller is left alone.
     public var joystick = true
+    /// Caps lock on the //e's keyboard: the host's keys, `type` and the
+    /// on-screen keyboard give capitals, as the unenhanced //e's Applesoft
+    /// wants.  The ][ and ][+ type capitals either way.
+    public var capsLock = true
+    /// The keyboard gives lower case: a //e with caps lock off.
+    var typesLowercase: Bool { model.isIIe && !capsLock }
     public private(set) var paused = false
     /// Why the machine stopped, or a file that couldn't be opened.
     public var message: String?
@@ -310,9 +316,10 @@ public final class Apple2 {
         }
     }
 
-    /// Types `text` key by key, as fast as the program takes them.
+    /// Types `text` key by key, as fast as the program takes them; in
+    /// capitals with `capsLock` (and always on the ][ and ][+).
     public func type(_ text: String) {
-        machine.type(text)
+        machine.type(typesLowercase ? text : text.uppercased())
     }
 
     /// The text screen as 24 lines of 40 characters.

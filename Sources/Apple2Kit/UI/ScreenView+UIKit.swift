@@ -275,7 +275,7 @@ final class ScreenUIView: UIView, UIKeyInput {
     /// The Apple key for a press: a keyboard's, or the Siri Remote's (a
     /// control key after play/pause).
     private func ascii(for press: UIPress) -> UInt8? {
-        if let key = press.key { return KeyMap.ascii(for: key, lowercase: emulator.model.isIIe) }
+        if let key = press.key { return KeyMap.ascii(for: key, lowercase: emulator.typesLowercase) }
         #if os(tvOS)
         return KeyMap.ascii(for: press.type).map { control && $0 >= 0x40 ? $0 & 0x1F : $0 }
         #else
@@ -364,7 +364,7 @@ final class ScreenUIView: UIView, UIKeyInput {
             }
             return
         }
-        emulator.type(text)                     // \n is return; capitals on the ][ and ][+
+        emulator.type(text)                     // \n is return; capitals with caps lock
     }
 
     func deleteBackward() { emulator.press(KeyMap.left) }
