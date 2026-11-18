@@ -13,11 +13,11 @@ public final class SoundPlayer {
 
     #if !os(macOS)
     /// The audio session's category, set once for every player, off the main
-    /// thread (it can block while the session is active): ambient, mixing
-    /// with other apps' sound, silent with the ring/silent switch.
+    /// thread (it can block while the session is active): playback, so it
+    /// sounds whatever the ring/silent switch, mixing with other apps' sound.
     private static let sessionCategory: Void = {
         DispatchQueue.global(qos: .userInitiated).async {
-            try? AVAudioSession.sharedInstance().setCategory(.ambient)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
         }
     }()
     #endif
