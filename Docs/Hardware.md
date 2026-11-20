@@ -56,7 +56,10 @@ to the first. If there is none, it starts Applesoft. To get BASIC with no
 disk, the Disk II's ROM is visible only while a drive has a disk.
 *Start BASIC* hides it until the code first reads the keyboard with no key
 waiting. By then the slot scan is over and BASIC waits at `]`, and `PR#6`
-works again.
+works again. Only a read counts: the //e's reset writes $C000‑$C00B (its
+memory switches, 80STORE off…) before the scan, which would otherwise
+bring the ROM back in time to boot the disk. `load` relies on the same
+start‑up for a machine that hasn't run yet.
 
 Power‑on clears RAM to 0. Applesoft then sees $03F4 ≠ $03F3 EOR $A5 and does
 a cold start. On the ][, whose monitor doesn't clear the screen, 0 shows as

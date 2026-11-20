@@ -73,8 +73,10 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   (row 0‑23, centred without `atX`, cut off at the row's ends; capitals on
   the ][ and ][+) and `cls()` on text page 1; `type(_:)`, `screenText`,
   `memoryDump`; `sound`, `volume`, `fastDisk`, `model`; status for a UI: `drives`,
-  `registers`, `videoMode`, `speed`, `paused`, `message`; `machine` (the
-  hardware, an `Apple2Machine`) for the rest.
+  `registers`, `videoMode`, `speed`, `paused`, `message`; `savedState()` /
+  `restore(_:)` (the machine as data – memory, CPU, switches, the disks with
+  what was written to them – to pick up where it was in a later launch);
+  `machine` (the hardware, an `Apple2Machine`) for the rest.
 * `Apple2View(apple, style:, scale:)`: shows and runs it (a display link),
   takes the keys while focused (Platforms, below). `style`: `.color`, `.filled`, `.monochrome`.
   `scale`: points per Apple dot (1, 2, 3…), or nil for any size at the
@@ -92,7 +94,9 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   `roms: .none`) has no ROMs (the language card's RAM always read and
   written, $C080‑$C08F pick the bank; the text page starts blank); `load(memory:languageCard:)` fills it; `insert(_:slot:)` puts an
   `Apple2Card` (its ROM page, its switches) in a slot; `ioHook` takes
-  soft switches of $C000‑$C0FF over; `copy()` makes an independent machine.
+  soft switches of $C000‑$C0FF over; `copy()` makes an independent machine;
+  `state` / `restore(_:)` keep its state (`Apple2Machine.State`, `Codable`)
+  without the host's cards and hooks.
   The language card's RAM, while read and written, lies in `cpu.mem` at
   $D000‑$FFFF (`languageCardRAM` has all 16K, `languageCardBank` the bank).
 * A program's memory by name, for a host that runs Swift in place of some

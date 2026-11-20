@@ -263,3 +263,33 @@ nonisolated struct WOZ {
         ~bytes.reduce(~UInt32(0)) { c, b in crcTable[Int((c ^ UInt32(b)) & 0xFF)] ^ c >> 8 }
     }
 }
+
+/// For a saved state (`Apple2Machine.State`), as it is: written as a file
+/// and read again its tracks would be numbered anew.  The bytes as `Data`.
+extension WOZ: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case info, map, trackBytes, trackBits, meta
+    }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        info = [UInt8](try c.decode(Data.self, forKey: .info))
+        map = [UInt8](try c.decode(Data.self, forKey: .map))
+        let bytes = try c.decode([Data].self, forKey: .trackBytes)
+        let bits = try c.decode([Int].self, forKey: .trackBits)
+        guard info.count == 60, map.count == WOZ.quarterTracks, bytes.count == bits.count else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "a damaged .woz"))
+        }
+        tracks = zip(bytes, bits).map { Track(bytes: [UInt8]($0), count: $1) }
+        meta = try c.decodeIfPresent(Data.self, forKey: .meta).map { [UInt8]($0) }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Data(info), forKey: .info)
+        try c.encode(Data(map), forKey: .map)
+        try c.encode(tracks.map { Data($0.bytes) }, forKey: .trackBytes)
+        try c.encode(tracks.map(\.count), forKey: .trackBits)
+        try c.encodeIfPresent(meta.map { Data($0) }, forKey: .meta)
+    }
+}

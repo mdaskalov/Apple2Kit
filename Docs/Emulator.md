@@ -197,6 +197,20 @@ the message.
   (`loadAddress(in:)`, what `dsk.py extract` writes), else $0800.
 * Model switch (][ ↔ ][+): a new `Apple2Machine` with the other ROM; the disks move
   across.
+* Saved state: `Apple2.savedState()` is `machine.state` (`Apple2Machine.State`,
+  Emulator/MachineState.swift) as a binary property list, about 0.2 MB
+  and 0.4 MB more for each disk in (a `.dsk` keeps its sectors and its
+  nibble tracks); `restore(_:)` decodes it and puts it into the machine,
+  or into a new one when the state is of another model. The state is what
+  `copy()` copies but the host's (cards, hooks, `ioHook`, traps), keys
+  held let go. The large arrays are `Data` (as numbers, a property list
+  takes several bytes for each, and long to write), so `DiskImage`, `WOZ`, `LanguageCard`
+  and `MouseCard` code their own `Codable`; a disk image is kept as it is
+  in memory, not as its file (read again, a `.woz`'s tracks would be
+  numbered anew, and its nibbles found afresh). A state of another
+  version (`State.currentVersion`), model or size is refused, the machine
+  as it was. Tests: StateTests.swift (a machine restored runs on exactly
+  as the one saved).
 
 ## The view
 

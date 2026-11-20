@@ -10,7 +10,7 @@ import Foundation
 /// over outlasts the count of a program that reads 0-255).  A timer still
 /// running isn't restarted.  Nothing plugged in: its timer never runs out
 /// (bit 7 stays set, PREAD reads 255), as on the Apple.
-public nonisolated struct GamePort: Sendable {
+public nonisolated struct GamePort: Sendable, Codable {
     /// CPU cycles a paddle step of its timer takes.
     public static let cyclesPerStep = 2816.0 / 255.0
 
@@ -25,7 +25,7 @@ public nonisolated struct GamePort: Sendable {
     private var ends: [UInt64] = [0, 0, 0, 0]
 
     /// A two-axis joystick with two buttons.
-    public struct Joystick: Equatable, Sendable {
+    public struct Joystick: Equatable, Sendable, Codable {
         /// The paddles: x 0 (left) to 255, y 0 (up) to 255.
         public var x: UInt8, y: UInt8
         public var buttons: [Bool]

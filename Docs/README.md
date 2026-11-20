@@ -32,6 +32,9 @@ Emulator.md). The aim is simple and readable code, not perfect rendering.
   the CPU's clock; a `.woz` is read bit by bit through the card's
   sequencer, at its bit timing, with bit slips and weak bits (DiskII.md,
   *Timing*).
+* **Saved state:** `savedState()` / `restore(_:)`, the whole machine with
+  its disks as data, for an app the system may end in the background
+  (Emulator.md, *Inputs, disks and binaries*).
 * **Binaries:** `load(url/bytes, at:, run:)` puts a file (as `Data/dsk.py
   extract` writes it) into memory and, as `BRUN` does, jumps to it; RTS
   returns to the monitor. The address comes from the call, or from the

@@ -563,7 +563,9 @@ public nonisolated final class Apple2Machine {
         case 0x0:
             if write && isIIe { setIIeSwitch(low) }
             let latch = readKeyboard(at: cpu.cycles)
-            if latch & 0x80 == 0 { diskROMHidden = false }      // BASIC waits for a key: the slot scan is over
+            // BASIC waits for a key: the slot scan is over (a read: the //e's
+            // reset writes here, to its memory switches, before the scan)
+            if !write, latch & 0x80 == 0 { diskROMHidden = false }
             return latch
         case 0x1:
             if isIIe && low != 0x10 { return write ? 0 : iieStatus(low & 0xF) }
@@ -715,6 +717,61 @@ public nonisolated final class Apple2Machine {
         return c
     }
 
+    /// The machine as it is, to put back later (`restore`), in this run of
+    /// the app or a later one (`State`).
+    public var state: State {
+        var keys = keyboard
+        keys.releaseAll()
+        return State(model: model.rawValue, a: cpu.a, x: cpu.x, y: cpu.y, sp: cpu.sp, p: cpu.p, pc: cpu.pc,
+                     cycles: cpu.cycles, stopsAtBRK: cpu.stopsAtBRK, memory: Data(cpu.mem),
+                     ioPages: cpu.ioPages, ioWritePages: cpu.ioWritePages, banks: Data(banks),
+                     auxInMemory: auxInMemory, otherLanguageCardRAM: Data(otherLanguageCardRAM),
+                     languageCard: languageCard, mappedBank2: mappedBank2, iie: iie, video: video,
+                     diskROMHidden: diskROMHidden, disk: disk.state, keyboard: keys, typeAhead: Data(typeAhead),
+                     nextTypedKey: nextTypedKey, gamePort: gamePort, mouseEnabled: mouseEnabled, mouse: mouse,
+                     verticalBlanks: verticalBlanks, speakerClicks: speakerClicks)
+    }
+
+    /// Puts the machine in `state`, one of a machine of this model; throws
+    /// (`State.Problem`), the machine as it was, for another version, model,
+    /// or a state that doesn't add up.  The host's cards, hooks and traps
+    /// stay as they are; `clicks` starts again (empty, if it was there).
+    public func restore(_ state: State) throws {
+        guard state.version == State.currentVersion else { throw State.Problem.otherVersion(state.version) }
+        guard state.model == model.rawValue else { throw State.Problem.otherModel(state.model) }
+        guard state.memory.count == cpu.mem.count, state.banks.count == banks.count,
+              state.ioPages.count == cpu.ioPages.count, state.ioWritePages.count == cpu.ioWritePages.count,
+              state.auxInMemory.count == auxInMemory.count, state.otherLanguageCardRAM.count == 0x4000,
+              state.languageCard.ram.count == 0x4000, state.languageCard.ramOnly == (rom == nil),
+              state.disk.isValid
+        else { throw State.Problem.damaged }
+        mouseEnabled = state.mouseEnabled       // first: putting the card in resets it
+        cpu.mem = [UInt8](state.memory)
+        for slot in 1 ... 7 where hasCard(slot) { putROMPage(slot) }     // this machine's cards
+        cpu.ioPages = state.ioPages
+        cpu.ioWritePages = state.ioWritePages
+        (cpu.a, cpu.x, cpu.y, cpu.sp, cpu.p, cpu.pc) = (state.a, state.x, state.y, state.sp, state.p, state.pc)
+        cpu.cycles = state.cycles
+        cpu.stopsAtBRK = state.stopsAtBRK
+        banks = [UInt8](state.banks)
+        auxInMemory = state.auxInMemory
+        otherLanguageCardRAM = [UInt8](state.otherLanguageCardRAM)
+        languageCard = state.languageCard
+        mappedBank2 = state.mappedBank2
+        iie = state.iie
+        video = state.video
+        diskROMHidden = state.diskROMHidden
+        disk.restore(state.disk)
+        keyboard = state.keyboard
+        typeAhead = [UInt8](state.typeAhead)
+        nextTypedKey = state.nextTypedKey
+        gamePort = state.gamePort
+        mouse = state.mouse
+        verticalBlanks = state.verticalBlanks
+        speakerClicks = state.speakerClicks
+        if clicks != nil { clicks = [] }
+    }
+
     // MARK: the language card in flat memory
 
     /// The language card's RAM in `cpu.mem` while it is read and written
@@ -794,7 +851,7 @@ public nonisolated extension Apple2Card {
 
 /// The display switches $C050-$C057 (and the //e's ALTCHARSET, 80COL and
 /// DHIRES).
-public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertible {
+public nonisolated struct VideoMode: Equatable, Sendable, Codable, CustomStringConvertible {
     public var text = true
     public var mixed = false
     /// PAGE2.  With the //e's 80STORE on it picks the bank of page 1 and page
@@ -819,7 +876,7 @@ public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertibl
     /// annunciator 3 off then on ($C05E, $C05F) twice, each time with 80COL
     /// off for a 1, on for a 0: 00 colour, 11 monochrome, 10 mixed (01, 160
     /// pixels a line on some cards, shows as colour).
-    public enum RGBMode: Sendable {
+    public enum RGBMode: Sendable, Codable {
         /// 140 pixels a line of 4 dots each.
         case color
         /// The 560 dots in black and white.
@@ -864,7 +921,7 @@ public nonisolated struct VideoMode: Equatable, Sendable, CustomStringConvertibl
 /// The //e's switches for memory and ROM ($C000-$C00B written, read at
 /// $C013-$C018): which bank the CPU reads and writes (`Apple2Machine.banks(of:)`),
 /// which ROM is at $C100-$CFFF.
-nonisolated struct IIeSwitches: Equatable {
+nonisolated struct IIeSwitches: Equatable, Codable {
     var store80 = false, ramRead = false, ramWrite = false, altZP = false
     var intCXROM = false, slotC3ROM = false
     /// $C800-$CFFF is the internal ROM's (since $C3xx was read), until $CFFF.
@@ -919,5 +976,32 @@ nonisolated struct LanguageCard: CustomStringConvertible {
 
     var description: String {
         "LC: read \(readsRAM ? "RAM" : "ROM"), write \(writesRAM ? "RAM" : "–"), bank \(bank2 ? 2 : 1)"
+    }
+}
+
+/// For a saved state (`Apple2Machine.State`): the RAM as `Data`.
+extension LanguageCard: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case ram, ramOnly, readsRAM, writesRAM, bank2, preWrite
+    }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ram = [UInt8](try c.decode(Data.self, forKey: .ram))
+        ramOnly = try c.decode(Bool.self, forKey: .ramOnly)
+        readsRAM = try c.decode(Bool.self, forKey: .readsRAM)
+        writesRAM = try c.decode(Bool.self, forKey: .writesRAM)
+        bank2 = try c.decode(Bool.self, forKey: .bank2)
+        preWrite = try c.decode(Bool.self, forKey: .preWrite)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Data(ram), forKey: .ram)
+        try c.encode(ramOnly, forKey: .ramOnly)
+        try c.encode(readsRAM, forKey: .readsRAM)
+        try c.encode(writesRAM, forKey: .writesRAM)
+        try c.encode(bank2, forKey: .bank2)
+        try c.encode(preWrite, forKey: .preWrite)
     }
 }

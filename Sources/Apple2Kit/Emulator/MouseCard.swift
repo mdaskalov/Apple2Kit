@@ -170,3 +170,39 @@ public nonisolated struct MouseCard: Sendable {
         mem[Hole.yHigh] = UInt8(py >> 8)
     }
 }
+
+/// For a saved state (`Apple2Machine.State`): `clamp`, a pair, as two ranges.
+extension MouseCard: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case x, y, clampX, clampY, mode, button, reportsClickOnce, pressed, downAtRead, moved, pending
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        x = try c.decode(Int.self, forKey: .x)
+        y = try c.decode(Int.self, forKey: .y)
+        clamp = (try c.decode(ClosedRange<Int>.self, forKey: .clampX), try c.decode(ClosedRange<Int>.self, forKey: .clampY))
+        mode = try c.decode(UInt8.self, forKey: .mode)
+        button = try c.decode(Bool.self, forKey: .button)
+        reportsClickOnce = try c.decode(Bool.self, forKey: .reportsClickOnce)
+        pressed = try c.decode(Bool.self, forKey: .pressed)
+        downAtRead = try c.decode(Bool.self, forKey: .downAtRead)
+        moved = try c.decode(Bool.self, forKey: .moved)
+        pending = try c.decode(UInt8.self, forKey: .pending)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(x, forKey: .x)
+        try c.encode(y, forKey: .y)
+        try c.encode(clamp.x, forKey: .clampX)
+        try c.encode(clamp.y, forKey: .clampY)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(button, forKey: .button)
+        try c.encode(reportsClickOnce, forKey: .reportsClickOnce)
+        try c.encode(pressed, forKey: .pressed)
+        try c.encode(downAtRead, forKey: .downAtRead)
+        try c.encode(moved, forKey: .moved)
+        try c.encode(pending, forKey: .pending)
+    }
+}

@@ -39,7 +39,7 @@ public final class Apple2 {
     public private(set) var machine: Apple2Machine
     /// The machine; another one restarts with the same disks.
     public var model: Model {
-        didSet { if model != oldValue { switchModel() } }
+        didSet { if model != machine.model { switchModel() } }
     }
     /// The speaker plays (else it is muted).  Either way what is queued goes:
     /// switched on, the next sound starts afresh.
@@ -431,6 +431,41 @@ public final class Apple2 {
     public static func loadAddress(in name: String) -> UInt16? {
         guard let range = name.range(of: "#06[0-9A-Fa-f]{4}", options: .regularExpression) else { return nil }
         return UInt16(name[range].dropFirst(3), radix: 16)
+    }
+
+    // MARK: saved state
+
+    /// The machine as it is – memory, the CPU, the switches, the drives and
+    /// their disks with what was written to them – as data for `restore(_:)`:
+    /// an app that saves it as it goes to the background picks up where it
+    /// was when it is launched again after the system ended it.  Not the
+    /// app's settings (`sound`, `volume`, `fastDisk`, `joystick`,
+    /// `capsLock`).  About 0.2 MB, and 0.4 MB more for each disk in.
+    public func savedState() throws -> Data {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        return try encoder.encode(machine.state)
+    }
+
+    /// Puts the machine back as `savedState()` had it, running, with the
+    /// model it had then (and the mouse card, if it was in).  Throws, the
+    /// machine as it was, for data that isn't a saved state or is one of
+    /// another version of its format (`Apple2Machine.State.Problem`).
+    public func restore(_ data: Data) throws {
+        let state = try PropertyListDecoder().decode(Apple2Machine.State.self, from: data)
+        guard let saved = state.savedModel else { throw Apple2Machine.State.Problem.otherModel(state.model) }
+        if saved == machine.model {
+            try machine.restore(state)
+        } else {
+            let restored = try ROMs.machine(saved, roms: roms)
+            try restored.restore(state)
+            restored.clicks = []
+            machine = restored
+            model = saved           // the machine's already: no switch
+        }
+        mouse = machine.mouseEnabled
+        resume()
+        refreshStatus(at: mediaTime())
     }
 
     // MARK: memory

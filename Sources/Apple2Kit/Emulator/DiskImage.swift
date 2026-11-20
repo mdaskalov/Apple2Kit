@@ -29,7 +29,7 @@ public nonisolated struct DiskImage {
     static let nibImageSize = tracks * nibblesPerTrack     // 232960
     static let volume: UInt8 = 254
 
-    public enum Format: String, Sendable {
+    public enum Format: String, Sendable, Codable {
         case dos = "DOS order"
         case prodos = "ProDOS order"
         case nib = "Nibbles"
@@ -320,6 +320,52 @@ public nonisolated struct DiskImage {
             if found[Int(s)] == nil { found[Int(s)] = bytes }
         }
         return found
+    }
+}
+
+/// For a saved state (`Apple2Machine.State`): the image as it is, with what
+/// was written to it, still to be saved; the tracks as `Data`.  An image
+/// whose tracks don't add up is refused.
+extension DiskImage: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case name, format, isWriteProtected, nibbles, trackMap, dirtyTracks, sectorData, woz, bitLengths, bitTiming
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        format = try c.decode(Format.self, forKey: .format)
+        isWriteProtected = try c.decode(Bool.self, forKey: .isWriteProtected)
+        nibbles = try c.decode([Data].self, forKey: .nibbles).map { [UInt8]($0) }
+        trackMap = try c.decode([Int].self, forKey: .trackMap).map { $0 < 0 ? nil : $0 }
+        dirtyTracks = Set(try c.decode([Int].self, forKey: .dirtyTracks))
+        sectorData = [UInt8](try c.decode(Data.self, forKey: .sectorData))
+        woz = try c.decodeIfPresent(WOZ.self, forKey: .woz)
+        bitLengths = try c.decode([Data].self, forKey: .bitLengths).map { [UInt8]($0) }
+        bitTiming = try c.decode(Int.self, forKey: .bitTiming)
+        let tracks = nibbles.indices
+        guard trackMap.count == DiskImage.quarterTracks,
+              trackMap.allSatisfy({ $0.map { tracks.contains($0) && !nibbles[$0].isEmpty } ?? true }),
+              dirtyTracks.allSatisfy(tracks.contains), bitTiming > 0,
+              format != .woz || woz != nil && bitLengths.map(\.count) == nibbles.map(\.count),
+              format != .dos && format != .prodos || sectorData.count == DiskImage.sectorImageSize
+        else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "a damaged disk image"))
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(format, forKey: .format)
+        try c.encode(isWriteProtected, forKey: .isWriteProtected)
+        try c.encode(nibbles.map { Data($0) }, forKey: .nibbles)
+        try c.encode(trackMap.map { $0 ?? -1 }, forKey: .trackMap)
+        try c.encode(dirtyTracks.sorted(), forKey: .dirtyTracks)
+        try c.encode(Data(sectorData), forKey: .sectorData)
+        try c.encodeIfPresent(woz, forKey: .woz)
+        try c.encode(bitLengths.map { Data($0) }, forKey: .bitLengths)
+        try c.encode(bitTiming, forKey: .bitTiming)
     }
 }
 

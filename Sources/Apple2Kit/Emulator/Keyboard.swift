@@ -10,7 +10,7 @@ import Foundation
 /// `repeatPeriod`.  The ][ and ][+ don't repeat (their REPT key isn't here).
 /// The repeat is worked out when the latch is read (`update`), at the cycle
 /// of the read, so it is the same however the CPU is run.
-public nonisolated struct Keyboard: Sendable {
+public nonisolated struct Keyboard: Sendable, Codable {
     /// The //e's auto-repeat: after about half a second held, about 15 a second.
     public static let repeatDelay = UInt64(Apple2Machine.clock / 2)
     public static let repeatPeriod = UInt64(Apple2Machine.clock / 15)
@@ -25,7 +25,7 @@ public nonisolated struct Keyboard: Sendable {
     /// It repeats (the //e).
     let repeats: Bool
 
-    private struct Key: Sendable {
+    private struct Key: Sendable, Codable {
         let id: Int
         let ascii: UInt8
     }

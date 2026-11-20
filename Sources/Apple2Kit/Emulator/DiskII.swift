@@ -98,6 +98,47 @@ public nonisolated final class DiskII {
         return c
     }
 
+    /// The controller's state, the drives' and their disks', for a saved
+    /// state (`Apple2Machine.State`).
+    struct State: Codable {
+        struct Drive: Codable {
+            var image: DiskImage?
+            var halfTrack: Int, phases: UInt8, position: Int, offset: Int, writeProtected: Bool
+        }
+
+        var drives: [Drive]
+        var selected: Int, motor: Bool, motorStops: UInt64?, now: UInt64
+        var q6: Bool, q7: Bool, latch: UInt8, latchCycle: UInt64, latchEighths: UInt64, latchRead: Bool, writing: Bool
+        var shift: UInt8, hold: Int, window: UInt8, bitTime: UInt64, random: UInt64
+
+        /// The drives are two, the heads on the disk.
+        var isValid: Bool {
+            drives.count == 2 && (0 ... 1).contains(selected)
+                && drives.allSatisfy { (0 ..< 2 * DiskImage.maxTracks).contains($0.halfTrack) && $0.position >= 0 && $0.offset >= 0 }
+        }
+    }
+
+    var state: State {
+        State(drives: drives.map {
+                  State.Drive(image: $0.image, halfTrack: $0.halfTrack, phases: $0.phases, position: $0.position,
+                              offset: $0.offset, writeProtected: $0.writeProtected)
+              },
+              selected: selected, motor: motor, motorStops: motorStops, now: now,
+              q6: q6, q7: q7, latch: latch, latchCycle: latchCycle, latchEighths: latchEighths, latchRead: latchRead,
+              writing: writing, shift: shift, hold: hold, window: window, bitTime: bitTime, random: random)
+    }
+
+    /// Puts the controller, the drives and their disks in `state` (`isValid`).
+    func restore(_ state: State) {
+        for (drive, saved) in zip(drives, state.drives) {
+            (drive.image, drive.halfTrack, drive.phases) = (saved.image, saved.halfTrack, saved.phases)
+            (drive.position, drive.offset, drive.writeProtected) = (saved.position, saved.offset, saved.writeProtected)
+        }
+        (selected, motor, motorStops, now) = (state.selected, state.motor, state.motorStops, state.now)
+        (q6, q7, latch, latchCycle, latchRead, writing) = (state.q6, state.q7, state.latch, state.latchCycle, state.latchRead, state.writing)
+        (latchEighths, shift, hold, window, bitTime, random) = (state.latchEighths, state.shift, state.hold, state.window, state.bitTime, state.random)
+    }
+
     /// The controller as after a power cycle (the drives keep their disks).
     func reset() {
         motor = false
