@@ -111,6 +111,11 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   before it, `addObserver` looks there; `switchedOff` turns hooks off by
   name (the CPU then doesn't stop there); `host` lets them find the app's
   own object.
+* The shadow of the hi‑res pages and traced natives (Docs/Natives.md):
+  `keepsShadow` keeps a second copy of $2000‑$5FFF that the code's writes
+  reach too; `addNative(at:name:flags:)` runs a routine's own code, then
+  Swift that may draw in its own way (`.ignoresGraphics`: the code's
+  writes kept out of the shadow) or give back the cycles (`.ignoresCycles`).
 * A binary is the file's bytes alone, as `Data/dsk.py extract` writes it;
   `load` jumps to it as `BRUN` does (RTS: the monitor's `*`).
   Without an address, `load` takes it from the name (`NAME#06XXXX.bin`, which

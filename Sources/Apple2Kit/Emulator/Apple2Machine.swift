@@ -122,6 +122,24 @@ public nonisolated final class Apple2Machine {
     /// The hooks (`addHook`, Hooks.swift): Swift where the CPU reaches an
     /// address, each with a switch if it has a name.
     var hooks = Hooks()
+    /// The shadow copy of the hi-res pages, $2000-$5FFF of main memory
+    /// (Shadow.swift), while `keepsShadow`.
+    var shadowBytes = [UInt8](repeating: 0, count: Apple2Machine.shadowSize)
+    /// Natives tracing their code (`addNative`) that keep its writes out of
+    /// the shadow (`NativeFlags.ignoresGraphics`).
+    var shadowSuspended = 0
+    /// The shadow follows main memory's writes to $2000-$5FFF (Shadow.swift):
+    /// switched on, it starts as a copy of the pages.
+    public var keepsShadow = false {
+        didSet {
+            guard keepsShadow != oldValue else { return }
+            for page in Apple2Machine.shadowPages { cpu.watchedPages[page] = keepsShadow }
+            if keepsShadow { syncShadow() }
+        }
+    }
+    /// Called with the address of every write the shadow takes, when set:
+    /// a host following what the code draws outside its natives.
+    public var onShadowWrite: ((Int) -> Void)?
     /// The host's object, for its hooks: a host keeping its own state with
     /// the machine (its devices, what its natives found) sets itself here,
     /// and its hooks find it (`machine.host as? MyHost`).  Not copied: a
@@ -163,6 +181,8 @@ public nonisolated final class Apple2Machine {
         cpu.ioRead = { [unowned self] in read($0) }
         cpu.ioWrite = { [unowned self] in write($0, $1) }
         cpu.onTrap = { [unowned self] pc in runMouseFirmware(at: pc) || runHooks(at: pc) || onTrap?(pc) == true }
+        // The kit's: the shadow's (`keepsShadow` watches $20-$5F).
+        cpu.onWrite = { [unowned self] a, _, value in shadowWrite(a, value) }
         powerOn()
     }
 
@@ -190,6 +210,7 @@ public nonisolated final class Apple2Machine {
         diskROMHidden = false
         (cpu.a, cpu.x, cpu.y, cpu.sp, cpu.p) = (0, 0, 0, 0xFF, 0x34)
         cpu.reset()
+        if keepsShadow { syncShadow() }
     }
 
     /// Power cycle into BASIC, whatever is in the drives: the ][+'s Applesoft
@@ -492,7 +513,14 @@ public nonisolated final class Apple2Machine {
         for (i, byte) in zip(address ..< 0xC000, bytes) {
             if isIIe && auxInMemory[i >> 8] { banks[i] = byte } else { cpu.mem[i] = byte }
         }
+        if keepsShadow { syncShadow() }
     }
+
+    /// `cpu.mem` holds aux memory's `page` (main memory's is in `banks`).
+    @inline(__always) func isAuxInMemory(_ page: Int) -> Bool { auxInMemory[page] }
+
+    /// Main memory's `page` where `cpu.mem` holds aux memory's.
+    func mainBankPage(_ page: Int) -> ArraySlice<UInt8> { banks[page << 8 ..< page << 8 + 0x100] }
 
     /// `banks` up to date: the pages `cpu.mem` holds copied there (they
     /// stay in `cpu.mem`).
@@ -683,9 +711,10 @@ public nonisolated final class Apple2Machine {
 
     /// An independent machine in the same state: memory, the switches, the
     /// devices, the drives and their disks, the CPU's registers and cycles,
-    /// the hooks and their switches.  The cards are the same (a card keeps
-    /// its own state); the host's `ioHook`, `onTrap` and `host`, and the
-    /// CPU's traps it set itself and its watches, aren't copied.
+    /// the hooks and their switches, the shadow of the hi-res pages.  The
+    /// cards are the same (a card keeps its own state); the host's `ioHook`,
+    /// `onTrap`, `onShadowWrite` and `host`, and the CPU's traps it set
+    /// itself and its watches, aren't copied.
     public func copy() -> Apple2Machine {
         let c = Apple2Machine(model: model, rom: rom, diskROM: diskROM)
         c.cpu.mem = cpu.mem
@@ -709,11 +738,15 @@ public nonisolated final class Apple2Machine {
         c.mouseEnabled = mouseEnabled           // first: putting the card in resets it
         c.mouse = mouse
         c.hooks = hooks
+        c.hooks.endTraces()                     // a copy made inside a native's trace isn't in it
         for address in hooks.active.keys { c.refreshTrap(address) }
         c.verticalBlanks = verticalBlanks
         c.speakerClicks = speakerClicks
         c.clicks = clicks
         c.diskROMHidden = diskROMHidden
+        c.keepsShadow = keepsShadow
+        c.shadowBytes = shadowBytes
+        c.onShadowWrite = nil                   // the host's
         return c
     }
 
@@ -735,7 +768,8 @@ public nonisolated final class Apple2Machine {
     /// Puts the machine in `state`, one of a machine of this model; throws
     /// (`State.Problem`), the machine as it was, for another version, model,
     /// or a state that doesn't add up.  The host's cards, hooks and traps
-    /// stay as they are; `clicks` starts again (empty, if it was there).
+    /// stay as they are; `clicks` starts again (empty, if it was there); the
+    /// shadow (not in a state) starts again as a copy of the pages.
     public func restore(_ state: State) throws {
         guard state.version == State.currentVersion else { throw State.Problem.otherVersion(state.version) }
         guard state.model == model.rawValue else { throw State.Problem.otherModel(state.model) }
@@ -770,6 +804,7 @@ public nonisolated final class Apple2Machine {
         verticalBlanks = state.verticalBlanks
         speakerClicks = state.speakerClicks
         if clicks != nil { clicks = [] }
+        if keepsShadow { syncShadow() }         // not in the state: the pages as they are
     }
 
     // MARK: the language card in flat memory

@@ -28,6 +28,12 @@ nonisolated struct Hooks {
     /// The hooks switched on at each address, observers first.
     var active: [UInt16: [Hook]] = [:]
     var switchedOff: Set<String> = []
+    /// A native's trace starts at its entry: the hooks there let the
+    /// instruction run (`runNative`).
+    var passThrough: UInt16?
+    /// Natives tracing their code that ignore graphics: the natives in it
+    /// run as code.
+    var ignoringGraphics = 0
     private var next = 0
     /// Counts every change, so a dispatch sees a hook taken out under it.
     private(set) var changes = 0
@@ -56,6 +62,12 @@ nonisolated struct Hooks {
         let on = (order[address] ?? []).compactMap { all[$0] }.filter { $0.name.map { !switchedOff.contains($0) } ?? true }
         let list = on.filter(\.observes) + on.filter { !$0.observes }
         active[address] = list.isEmpty ? nil : list
+    }
+
+    /// No native's trace under way (a machine's copy).
+    mutating func endTraces() {
+        passThrough = nil
+        ignoringGraphics = 0
     }
 
     /// The addresses with a hook that has a name.
@@ -120,6 +132,10 @@ public nonisolated extension Apple2Machine {
 
     /// The hooks at `pc`; true: one handled the instruction.
     internal func runHooks(at pc: UInt16) -> Bool {
+        if hooks.passThrough == pc {
+            hooks.passThrough = nil
+            return false
+        }
         guard let list = hooks.active[pc] else { return false }
         let changes = hooks.changes
         for hook in list {

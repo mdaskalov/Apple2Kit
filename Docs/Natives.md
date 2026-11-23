@@ -197,6 +197,40 @@ notices. A copy has no host: the host's copy sets itself.
 `onTrap` stays for traps a host sets itself in `cpu.traps`, asked where no
 hook took the stop.
 
+## The shadow and traced natives
+
+A host that draws some of a program's graphics in its own way (a font, a
+sprite at its own resolution) and the rest as the Apple's pixels needs the
+page without what it draws, and the program's memory and timing left as
+they are. Two things in Emulator/Shadow.swift and Emulator/TracedNatives.swift:
+
+* **The shadow** (`keepsShadow`, `shadow`, `shadowScreen(page2:)`): a second
+  copy of main memory's $2000‑$5FFF, hi‑res pages 1 and 2. Switched on it
+  starts as a copy of the pages; every write of the code reaches it too,
+  byte for byte, but those of a native's code that ignores graphics. A host
+  shows it in place of the pages and draws its own drawings over it.
+  `writeShadow` writes it alone (a native drawing there what the code
+  didn't); `onShadowWrite` tells the host every write the shadow takes.
+  The kit owns `cpu.onWrite` for it (watching $20‑$5F). `copy()` copies it;
+  a `State` doesn't hold it: `restore`, `load`, `writeMain` and `powerOn`
+  copy the pages into it again. Double hi‑res (aux memory) has none.
+* **Traced natives** (`addNative(at:name:flags:maxSteps:_:)`): a named hook
+  at a routine's entry. There `begin` looks at the machine (the parameters,
+  before the code changes them) and returns what to do after the code, or
+  nil to let the routine run as ever. The routine's code then runs as the
+  CPU would run it, up to its RTS (the return address the stack has at the
+  entry, the stack pointer 2 above the entry's): memory, registers and
+  cycles are the code's. Then the native runs with `NativeCall` (the
+  registers and stack pointer at the entry, the cycles the code took); it
+  may draw on the shadow or on the host's own layer and add cycles, and the
+  registers, stack pointer and PC are put back as the code left them.
+  Flags: `.ignoresGraphics` keeps the code's writes out of the shadow (and
+  the natives the code reaches run as code: the outer one draws them all);
+  `.ignoresCycles` puts the clock back to the entry's cycle (the native adds
+  what it wants). Code that goes astray (`maxSteps` instructions, a BRK, a
+  jam) leaves the native out: the CPU goes on from where it is. Switched off
+  by its name, the routine runs as ever, its writes in the shadow.
+
 ## Symbol files
 
 `SymbolFile` writes the names in AppleWin's format (a line a symbol, `ADDR
@@ -223,4 +257,8 @@ traps staying. `swift test --filter SymbolTests`: addresses, the names (a build'
 its parent's), fingerprints (a variable between the instructions changed,
 an instruction changed, a build's own code), memory by name (wrapping at
 64K, two builds' maps, code for their parent on both, a program's own
-kind, an image), watched pages, the symbol file's text.
+kind, an image), watched pages, the symbol file's text. `swift test
+--filter ShadowTests`: the shadow following writes, a traced native (the
+code's memory, registers and cycles, its writes kept out of the shadow),
+ignored cycles, a native declining, natives inside natives, switched off,
+code going astray.
