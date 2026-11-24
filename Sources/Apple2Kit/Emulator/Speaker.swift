@@ -93,7 +93,8 @@ public nonisolated struct SpeakerStream {
         let starting = position == nil
         if starting {
             guard let first = pending.first else { return [] }
-            position = Double(first)
+            // From `now` if the first click is still to come: the silence before it keeps its length.
+            position = Double(min(first, now))
             speaker.rest()
         }
         let start = position!
