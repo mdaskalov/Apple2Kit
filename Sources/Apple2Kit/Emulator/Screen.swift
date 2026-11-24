@@ -287,6 +287,30 @@ public nonisolated enum Screen {
         return image(pixels, width: w, height: height * 2)
     }
 
+    /// `screen`'s `lines` as `image` shows them, every black dot
+    /// transparent.  560 × 2·`lines`, a line two rows: a host's overlay over
+    /// a page's image (what its natives drew, on a black page of their own,
+    /// in the style the page is shown in).
+    public static func overlay(_ screen: HiresScreen, lines: Range<Int>, style: Style = .color) -> CGImage? {
+        let lines = lines.clamped(to: 0 ..< height)
+        guard !lines.isEmpty else { return nil }
+        let w = width
+        var pixels = [UInt32](repeating: 0, count: w * lines.count * 2)
+        pixels.withUnsafeMutableBufferPointer { buffer in
+            screen.bytes.withUnsafeBufferPointer { bytes in
+                withHiresLine { line in
+                    for (i, y) in lines.enumerated() {
+                        let o = buffer.baseAddress! + i * 2 * w
+                        line.draw(bytes.baseAddress! + y * HiresScreen.bytesPerLine, style: style, into: o)
+                        for d in 0 ..< w where o[d] == black { o[d] = 0 }
+                        (o + w).update(from: o, count: w)
+                    }
+                }
+            }
+        }
+        return image(pixels, width: w, height: lines.count * 2, alpha: true)
+    }
+
     /// `screen` small, a pixel a pixel (280 × 192), for thumbnails: its
     /// colours as a colour monitor shows them from afar, filled in (as
     /// `Style.filled`; green on the monochrome screen).  Half a pixel is too
@@ -413,12 +437,14 @@ public nonisolated enum Screen {
         return image(doubled, width: width, height: height * 2)
     }
 
-    /// `w` × `h` RGBA pixels as an image.
-    static func image(_ pixels: [UInt32], width w: Int, height h: Int) -> CGImage? {
+    /// `w` × `h` RGBA pixels as an image; with `alpha`, a pixel 0 is
+    /// transparent (the others are opaque).
+    static func image(_ pixels: [UInt32], width w: Int, height h: Int, alpha: Bool = false) -> CGImage? {
         guard let provider = CGDataProvider(data: pixels.withUnsafeBytes { Data($0) } as CFData) else { return nil }
+        let info = alpha ? CGImageAlphaInfo.premultipliedLast : .noneSkipLast
         return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
                        space: CGColorSpaceCreateDeviceRGB(),
-                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       bitmapInfo: CGBitmapInfo(rawValue: info.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 }
