@@ -1,7 +1,7 @@
 # The code
 
 ```
-Package.swift           the library Apple2Kit (macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1), on MOS6502 (git, from 1.2.0)
+Package.swift           the library Apple2Kit (macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1), on MOS6502 (git, from 1.3.0)
 Sources/Apple2Kit/
   Emulator/             the emulator core: no AppKit/SwiftUI, also built by Data/headless.sh
     Apple2Machine.swift the machine: memory map, soft switches, language card, the //e's aux memory, run, step (the IRQ line)
@@ -49,7 +49,7 @@ The CPU is the `MOS6502` package. It has its own git repository,
 https://github.com/mdaskalov/MOS6502; its README covers the CPU.
 
 Apple2Kit uses it as a **git** dependency
-(`https://github.com/mdaskalov/MOS6502.git`, `from: "1.2.0"`), not as a
+(`https://github.com/mdaskalov/MOS6502.git`, `from: "1.3.0"`), not as a
 local package by path: Xcode opens a local package in one window only, so
 two projects referring to the same folder can't both build. With a git
 dependency, Xcode builds from its own checkout (DerivedData/…/SourcePackages).
@@ -57,7 +57,7 @@ dependency, Xcode builds from its own checkout (DerivedData/…/SourcePackages).
 To use a change to the CPU: push it (and tag a new version) on GitHub, then
 in the app choose *File ▸ Packages ▸ Update to Latest Package Versions*
 (or `swift package update` here). `Data/mos6502.sh` (headless runner)
-clones the tag `$MOS6502_REF` (default `1.2.0`, or a branch such as `main`)
+clones the tag `$MOS6502_REF` (default `1.3.0`, or a branch such as `main`)
 into `$TMPDIR`; set `MOS6502_PACKAGE` to a local working copy to compile
 that instead, uncommitted changes included.
 

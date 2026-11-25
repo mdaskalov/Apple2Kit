@@ -7,7 +7,7 @@ Disk II (`.dsk`, `.do`, `.po`, `.nib`, `.woz`, read and write), text (40 and 80
 columns), lo‑res, hi‑res, double lo‑res and double hi‑res, the speaker, the
 keyboard. The CPU is the `MOS6502` package
 ([github.com/mdaskalov/MOS6502](https://github.com/mdaskalov/MOS6502),
-version 1.2.0): the 6502, and the enhanced //e's 65C02.
+version 1.3.0): the 6502, and the enhanced //e's 65C02.
 
 ## Use
 
