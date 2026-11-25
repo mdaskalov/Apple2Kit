@@ -70,7 +70,9 @@ Things used here:
   //e's pages read from one bank and written to the other).
 * `step()` runs one instruction, and `cycles` counts on. While an
   instruction reads or writes I/O, `cycles` is the cycle of that access,
-  which `DiskII` uses for its timing.
+  which `DiskII` uses for its timing. `Apple2Machine.step()` and
+  `call()` are the machine's own: the IRQ line (`step`) and the bits of
+  hidden dots (Natives.md) come with them, not with `cpu.step`/`cpu.call`.
 * `reset()` goes through $FFFC.
 * `step()` throws on a JAM opcode (the 6502's; the 65C02 has none). The
   app pauses and says where.

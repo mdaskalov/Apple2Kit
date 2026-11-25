@@ -120,26 +120,48 @@ public nonisolated final class Apple2Machine {
     /// How many vertical blanks have begun (`step`, for the mouse card's interrupt).
     private var verticalBlanks: UInt64 = 0
     /// The hooks (`addHook`, Hooks.swift): Swift where the CPU reaches an
-    /// address, each with a switch if it has a name.
+    /// address, and the natives (`addNative`, Natives.swift) where a JSR
+    /// calls one, each with a switch if it has a name.
     var hooks = Hooks()
-    /// The shadow copy of the hi-res pages, $2000-$5FFF of main memory
-    /// (Shadow.swift), while `keepsShadow`.
-    var shadowBytes = [UInt8](repeating: 0, count: Apple2Machine.shadowSize)
-    /// Natives tracing their code (`addNative`) that keep its writes out of
-    /// the shadow (`NativeFlags.ignoresGraphics`).
-    var shadowSuspended = 0
-    /// The shadow follows main memory's writes to $2000-$5FFF (Shadow.swift):
-    /// switched on, it starts as a copy of the pages.
-    public var keepsShadow = false {
+    /// The natives running (`NativeCall.depth`).
+    var nativeCalls = 0
+    /// The layer of each byte of $2000-$5FFF, byte 0 $2000 (`layer(at:)`,
+    /// Layers.swift); `layersUsed`: one may be another's than 0.
+    var byteLayers = [UInt8](repeating: 0, count: Apple2Machine.hiresSize)
+    var layersUsed = false
+    /// The dots (bits 0-6) of each byte of $2000-$5FFF a hidden layer lit
+    /// (`hiddenLayers`, `hiddenDots(at:)`), byte 0 $2000.
+    var hiddenDots = [UInt8](repeating: 0, count: Apple2Machine.hiresSize)
+    /// `hiddenLayers` by layer number.
+    var layerHidden = [Bool](repeating: false, count: 256)
+    /// The dots (bits 0-6) of each byte of $2000-$5FFF its layer's code
+    /// passed through as they were (`passedDots(at:)`, BitFlow.swift).
+    var passedDots = [UInt8](repeating: 0, count: Apple2Machine.hiresSize)
+    /// Which bits of the registers are a page byte's as they were
+    /// (BitFlow.swift), followed while `flowTracking`: a byte may be another
+    /// layer's than 0 (`layersUsed`), and the code isn't drawing a hidden
+    /// layer's (`flowSuspended`: that or a `.discard`'s).
+    var flow = BitFlow()
+    var flowTracking = false
+    var flowSuspended = false
+    /// The CPU's opcodes, to decode the instructions followed.
+    let opcodes: [Opcode]
+    /// The layer the CPU's writes there are now (`DrawTarget`).
+    var drawLayer: UInt8 = 0
+    /// The natives' code drawing on their targets, the innermost last;
+    /// `drawingPool` keeps them for the next.
+    var drawings: [LayerDrawing] = []
+    var drawingPool: [LayerDrawing] = []
+    /// The CPU's I/O pages $20-$5F before `.discard` took them.
+    var pagesBeforeDrawing: [Bool] = []
+    /// Called with the address of every write to main memory's hi-res
+    /// pages ($2000-$5FFF), when set: a host following what the code draws
+    /// there (PageWrites.swift).
+    public var onPageWrite: ((Int) -> Void)? {
         didSet {
-            guard keepsShadow != oldValue else { return }
-            for page in Apple2Machine.shadowPages { cpu.watchedPages[page] = keepsShadow }
-            if keepsShadow { syncShadow() }
+            if (onPageWrite == nil) != (oldValue == nil) { updateWatchedPages() }
         }
     }
-    /// Called with the address of every write the shadow takes, when set:
-    /// a host following what the code draws outside its natives.
-    public var onShadowWrite: ((Int) -> Void)?
     /// The host's object, for its hooks: a host keeping its own state with
     /// the machine (its devices, what its natives found) sets itself here,
     /// and its hooks find it (`machine.host as? MyHost`).  Not copied: a
@@ -173,6 +195,7 @@ public nonisolated final class Apple2Machine {
         self.rom = rom
         self.diskROM = diskROM
         isIIe = model.isIIe
+        opcodes = Opcode.table(for: model.cpuVariant)
         banks = [UInt8](repeating: 0, count: model.isIIe ? 0x18000 : 0)
         languageCard = LanguageCard(ramOnly: rom == nil)
         keyboard = Keyboard(repeats: model.isIIe)
@@ -181,8 +204,9 @@ public nonisolated final class Apple2Machine {
         cpu.ioRead = { [unowned self] in read($0) }
         cpu.ioWrite = { [unowned self] in write($0, $1) }
         cpu.onTrap = { [unowned self] pc in runMouseFirmware(at: pc) || runHooks(at: pc) || onTrap?(pc) == true }
-        // The kit's: the shadow's (`keepsShadow` watches $20-$5F).
-        cpu.onWrite = { [unowned self] a, _, value in shadowWrite(a, value) }
+        cpu.onCall = { [unowned self] in runNative(at: $0) }
+        // The kit's: `onPageWrite`'s (it watches $20-$5F).
+        cpu.onWrite = { [unowned self] a, old, new in pageWritten(a, old: old, new: new) }
         powerOn()
     }
 
@@ -193,6 +217,7 @@ public nonisolated final class Apple2Machine {
     public func powerOn() {
         unmapLanguageCard()
         cpu.mem.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        clearLayers()
         banks.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         auxInMemory = [Bool](repeating: false, count: 0xC0)
         for page in 0 ..< 0xC0 { cpu.ioWritePages[page] = false }
@@ -210,7 +235,6 @@ public nonisolated final class Apple2Machine {
         diskROMHidden = false
         (cpu.a, cpu.x, cpu.y, cpu.sp, cpu.p) = (0, 0, 0, 0xFF, 0x34)
         cpu.reset()
-        if keepsShadow { syncShadow() }
     }
 
     /// Power cycle into BASIC, whatever is in the drives: the ][+'s Applesoft
@@ -250,7 +274,30 @@ public nonisolated final class Apple2Machine {
     /// itself steps here, not `cpu.step`, for the interrupts.
     @inline(__always) public func step() throws {
         if mouseEnabled { serveMouseLine() }
+        try stepCPU()
+    }
+
+    @inline(__always) private func stepCPU() throws {
+        if flowTracking { trackFlow() }
         try cpu.step()
+    }
+
+    /// `cpu.call`, the machine's way: JSR to `address` and run until it
+    /// returns or PC reaches one of `stopAt` (the address it stopped at),
+    /// instruction by instruction as `step` does it, the bits of the hidden
+    /// dots followed (`BitFlow`), but the interrupt line not served, as
+    /// `cpu.call` doesn't.  A host steps the machine with `step` or `call`,
+    /// not `cpu.step` or `cpu.call`, to have them followed.
+    @discardableResult
+    public func call(_ address: UInt16, stopAt: Set<UInt16> = [], maxSteps: Int = 5_000_000) throws -> UInt16 {
+        cpu.push(0xFF)                          // RTS lands on $FFFF: the end
+        cpu.push(0xFE)
+        cpu.pc = address
+        for _ in 0 ..< maxSteps {
+            if cpu.pc == 0xFFFF || stopAt.contains(cpu.pc) { return cpu.pc }
+            try stepCPU()
+        }
+        throw CPU6502.CPUError.tooManySteps(pc: cpu.pc)
     }
 
     /// The mouse card's vertical blank interrupt, and its IRQ line.
@@ -394,7 +441,9 @@ public nonisolated final class Apple2Machine {
             guard !languageCard.readsRAM, let rom else { return languageCard.ram[languageCard.offset(a)] }
             return rom[Int(a) - 0xD000 + romOffset]
         }
-        if a < 0xC000 { return cpu.mem[Int(a)] }                      // a host's I/O page
+        if a < 0xC000 {                                                // a host's I/O page; a native's layer
+            return discards && a >= 0x2000 && a < 0x6000 ? drawnRead(a) : cpu.mem[Int(a)]
+        }
         if a < 0xC100 { return io(a, write: false, value: 0) }
         if isIIe, let byte = internalROM(a) { return byte }
         let slot = Int(a >> 8) - 0xC0
@@ -407,10 +456,13 @@ public nonisolated final class Apple2Machine {
         if a >= 0xD000 {
             if languageCard.writesRAM { languageCard.ram[languageCard.offset(a)] = value }
         } else if a < 0xC000 {
+            if discards && a >= 0x2000 && a < 0x6000 { return drawnWrite(a, value) }
             let page = Int(a >> 8)
             let aux = isIIe && banks(of: page).write
             if aux == (isIIe && auxInMemory[page]) {                    // a host's I/O page
+                let old = cpu.mem[Int(a)]
                 cpu.mem[Int(a)] = value
+                if cpu.watchedPages[page] { pageWritten(a, old: old, new: value) }
             } else {
                 banks[(aux ? 0xC000 : 0) + Int(a)] = value                // the //e: the bank not in `cpu.mem`
             }
@@ -513,7 +565,6 @@ public nonisolated final class Apple2Machine {
         for (i, byte) in zip(address ..< 0xC000, bytes) {
             if isIIe && auxInMemory[i >> 8] { banks[i] = byte } else { cpu.mem[i] = byte }
         }
-        if keepsShadow { syncShadow() }
     }
 
     /// `cpu.mem` holds aux memory's `page` (main memory's is in `banks`).
@@ -711,14 +762,28 @@ public nonisolated final class Apple2Machine {
 
     /// An independent machine in the same state: memory, the switches, the
     /// devices, the drives and their disks, the CPU's registers and cycles,
-    /// the hooks and their switches, the shadow of the hi-res pages.  The
-    /// cards are the same (a card keeps its own state); the host's `ioHook`,
-    /// `onTrap`, `onShadowWrite` and `host`, and the CPU's traps it set
+    /// the hooks, natives and their switches, the layers of the hi-res
+    /// pages' bytes (`layer(at:)`) with their hidden and passed dots, and
+    /// the bits the registers hold of them (`BitFlow`).  The cards are the same (a
+    /// card keeps its own state); the host's `ioHook`, `onTrap`,
+    /// `onPageWrite` and `host`, and the CPU's traps it set
     /// itself and its watches, aren't copied.
     public func copy() -> Apple2Machine {
         let c = Apple2Machine(model: model, rom: rom, diskROM: diskROM)
         c.cpu.mem = cpu.mem
-        c.cpu.ioPages = cpu.ioPages
+        c.cpu.ioPages = restingIOPages            // a copy made inside a native's drawing isn't in it
+        c.byteLayers = byteLayers
+        c.layersUsed = layersUsed
+        c.hiddenDots = hiddenDots
+        c.passedDots = passedDots
+        c.layerHidden = layerHidden
+        c.updateFlowTracking()
+        // Between a load and its store, the bits the registers hold go on in the copy.
+        if flowTracking && c.flowTracking {
+            c.flow = flow
+            c.flow.store = .init()
+        }
+        c.updateWatchedPages()
         c.cpu.ioWritePages = cpu.ioWritePages
         c.banks = banks
         c.auxInMemory = auxInMemory
@@ -738,15 +803,11 @@ public nonisolated final class Apple2Machine {
         c.mouseEnabled = mouseEnabled           // first: putting the card in resets it
         c.mouse = mouse
         c.hooks = hooks
-        c.hooks.endTraces()                     // a copy made inside a native's trace isn't in it
-        for address in hooks.active.keys { c.refreshTrap(address) }
+        for address in hooks.hooked { c.refreshTrap(address) }
         c.verticalBlanks = verticalBlanks
         c.speakerClicks = speakerClicks
         c.clicks = clicks
         c.diskROMHidden = diskROMHidden
-        c.keepsShadow = keepsShadow
-        c.shadowBytes = shadowBytes
-        c.onShadowWrite = nil                   // the host's
         return c
     }
 
@@ -757,7 +818,7 @@ public nonisolated final class Apple2Machine {
         keys.releaseAll()
         return State(model: model.rawValue, a: cpu.a, x: cpu.x, y: cpu.y, sp: cpu.sp, p: cpu.p, pc: cpu.pc,
                      cycles: cpu.cycles, stopsAtBRK: cpu.stopsAtBRK, memory: Data(cpu.mem),
-                     ioPages: cpu.ioPages, ioWritePages: cpu.ioWritePages, banks: Data(banks),
+                     ioPages: restingIOPages, ioWritePages: cpu.ioWritePages, banks: Data(banks),
                      auxInMemory: auxInMemory, otherLanguageCardRAM: Data(otherLanguageCardRAM),
                      languageCard: languageCard, mappedBank2: mappedBank2, iie: iie, video: video,
                      diskROMHidden: diskROMHidden, disk: disk.state, keyboard: keys, typeAhead: Data(typeAhead),
@@ -768,8 +829,7 @@ public nonisolated final class Apple2Machine {
     /// Puts the machine in `state`, one of a machine of this model; throws
     /// (`State.Problem`), the machine as it was, for another version, model,
     /// or a state that doesn't add up.  The host's cards, hooks and traps
-    /// stay as they are; `clicks` starts again (empty, if it was there); the
-    /// shadow (not in a state) starts again as a copy of the pages.
+    /// stay as they are; `clicks` starts again (empty, if it was there).
     public func restore(_ state: State) throws {
         guard state.version == State.currentVersion else { throw State.Problem.otherVersion(state.version) }
         guard state.model == model.rawValue else { throw State.Problem.otherModel(state.model) }
@@ -804,7 +864,7 @@ public nonisolated final class Apple2Machine {
         verticalBlanks = state.verticalBlanks
         speakerClicks = state.speakerClicks
         if clicks != nil { clicks = [] }
-        if keepsShadow { syncShadow() }         // not in the state: the pages as they are
+        clearLayers()
     }
 
     // MARK: the language card in flat memory

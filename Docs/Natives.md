@@ -197,39 +197,114 @@ notices. A copy has no host: the host's copy sets itself.
 `onTrap` stays for traps a host sets itself in `cpu.traps`, asked where no
 hook took the stop.
 
-## The shadow and traced natives
+## Natives and layers
 
 A host that draws some of a program's graphics in its own way (a font, a
-sprite at its own resolution) and the rest as the Apple's pixels needs the
-page without what it draws, and the program's memory and timing left as
-they are. Two things in Emulator/Shadow.swift and Emulator/TracedNatives.swift:
+sprite at its own resolution, a layer of its own) and the rest as the
+Apple's pixels needs the program's code to run as ever – memory and timing
+the original's – while its drawing goes where the host wants it. Three
+things in Emulator/Natives.swift, Emulator/Layers.swift and
+Emulator/PageWrites.swift:
 
-* **The shadow** (`keepsShadow`, `shadow`, `shadowScreen(page2:)`): a second
-  copy of main memory's $2000‑$5FFF, hi‑res pages 1 and 2. Switched on it
-  starts as a copy of the pages; every write of the code reaches it too,
-  byte for byte, but those of a native's code that ignores graphics. A host
-  shows it in place of the pages and draws its own drawings over it.
-  `writeShadow` writes it alone (a native drawing there what the code
-  didn't); `onShadowWrite` tells the host every write the shadow takes.
-  The kit owns `cpu.onWrite` for it (watching $20‑$5F). `copy()` copies it;
-  a `State` doesn't hold it: `restore`, `load`, `writeMain` and `powerOn`
-  copy the pages into it again. Double hi‑res (aux memory) has none.
-* **Traced natives** (`addNative(at:name:flags:maxSteps:_:)`): a named hook
-  at a routine's entry. There `begin` looks at the machine (the parameters,
-  before the code changes them) and returns what to do after the code, or
-  nil to let the routine run as ever. The routine's code then runs as the
-  CPU would run it, up to its RTS (the return address the stack has at the
-  entry, the stack pointer 2 above the entry's): memory, registers and
-  cycles are the code's. Then the native runs with `NativeCall` (the
-  registers and stack pointer at the entry, the cycles the code took); it
-  may draw on the shadow or on the host's own layer and add cycles, and the
-  registers, stack pointer and PC are put back as the code left them.
-  Flags: `.ignoresGraphics` keeps the code's writes out of the shadow (and
-  the natives the code reaches run as code: the outer one draws them all);
-  `.ignoresCycles` puts the clock back to the entry's cycle (the native adds
-  what it wants). Code that goes astray (`maxSteps` instructions, a BRK, a
-  jam) leaves the native out: the CPU goes on from where it is. Switched off
-  by its name, the routine runs as ever, its writes in the shadow.
+* **Natives** (`addNative(at:name:maxSteps:_:)`): a named native for the
+  routine at an address, run where a JSR calls it – not where a branch, a
+  JMP or an RTS gets there (the CPU's `callTraps` and `onCall`, after the
+  JSR's pushes and 6 cycles). It gets a `NativeCall` (the machine, the
+  registers and stack pointer at the entry, the return address, `depth`:
+  the natives it runs inside) and decides what the call does:
+  * `call.run()` runs the routine's own code as the CPU runs it, up to its
+    RTS (the return address, the stack pointer 2 above the entry's): memory,
+    registers and cycles the code's, the natives it calls run. It draws
+    where it draws now: on layer 0, or on the target of the native it runs
+    inside. It returns the cycles the code took, nil where it went astray
+    (`maxSteps` instructions, a BRK, a jam: the CPU goes on from where it
+    is). Once a call.
+  * `call.run(into: target)` runs it drawing on its target (`DrawTarget`):
+    a layer (`.layer(n)`, or just `run(into: 2)`; `.main` is layer 0) or
+    `.discard` (nowhere). A native inside it draws there too, unless it
+    names a target of its own. `drawsOnLayer` tells a native inside such
+    a run.
+  * Without `run` the code is left out: the call returns (RTS) with the
+    registers as the native leaves them.
+  * It returns the cycles the call takes after the JSR: `run`'s for the
+    original's pace, fewer to run faster, 0 for none. What the code did by
+    the clock in between (a click) keeps the cycle it had.
+
+  Switched off by its name the routine runs as ever. At an address the
+  first native switched on runs.
+* **Layers** one byte at an address, as
+  on the Apple – main memory's. Each byte of $2000‑$5FFF also has a
+  layer number, the drawing that wrote it last (`layer(at:)`): 0 the
+  code's own, *n* a native's run into `.layer(n)`. The code reads memory
+  as ever, so it finds what the original finds, branches and cycles the
+  original's; a write sets the byte's layer (the CPU watches $20‑$5F
+  once a byte may be another layer's than 0; a Swift native's writes by
+  `RAM` too). A plain write makes the byte layer 0's again.
+  **Hidden layers** (`hiddenLayers`): in memory as any other, but the
+  dots their code lit are the host's to draw (`hiddenDots(at:)`,
+  `HiresScreen.hidden`). **Passed dots** (`passedDots(at:)`,
+  `HiresScreen.passed`): a drawing over a byte owns only the dots its code
+  clears or sets; those it passes through as they were (a sprite's mask
+  lets them through) stay what they were – hidden dots hidden, and on a
+  layer over 0 transparent in its group's image, the host's drawing and
+  the layers under it showing there. A dot that is the same before and
+  after is either, and the bytes don't tell, so the machine follows the
+  bits (**bit flow**, BitFlow.swift): for each of A, X and Y the bits that
+  are still a page byte's, in place, and which byte's. A load from a page
+  byte starts them; `AND` keeps a bit of A where the operand has a 1 and
+  one of the operand's (a page byte's) where A has a 1, `ORA` and `EOR`
+  where the other has a 0 (a byte with itself: `AND`, `ORA` keep its bits,
+  `EOR` clears them); transfers copy them; anything else that
+  changes a register makes its bits the code's; a store into the byte
+  they came from leaves them as passed through. The code runs once, as
+  ever, memory, registers and cycles untouched. What isn't followed
+  counts as the code's own drawing (opaque): a bit that goes through
+  memory (the stack, a zero-page temporary), moves (a shift) or into
+  another byte, an instruction a hook may take. It follows the engine's
+  every merge (`(old AND keep) OR set`, in either order of the operands);
+  it runs while a byte may be another layer's than 0 (`layersUsed`),
+  except as the code draws a hidden layer's (its own dots, those it
+  lights) or `.discard`'s. A host steps the machine with `step()` or
+  `call()` for it, not `cpu.step`/`cpu.call`; a copy of the machine goes
+  on with the bits its registers hold. A byte has one layer: the
+  dots its layer passed through count as the layers' under the groups
+  over 0 (with layer 0's group in the images), also those another layer
+  over 0 drew before.
+  `.discard`
+  writes nothing, memory and layers stay as they were: the code reads
+  back what it wrote (its own, or that of a `.discard` it runs inside)
+  until it returns. `clearLayers(page2:)` makes a page's bytes layer 0's
+  (the bytes stay); a copy of the machine has the layers, a restored
+  state none.
+* **Showing them** (`hiresScreen(page2:)`: a `HiresScreen` with its
+  bytes' `layers`; `Screen.images(screen, groups:style:)`): the layers shown
+  in groups (`[0 ... 5, 6 ... 9]`), each group an image to put over the
+  ones before it, the host's own drawing in between. The bytes of the
+  layers shown make one page (`HiresScreen.showing`: a byte of a layer not
+  shown has no pixels); each byte's dots are in its layer's group's image,
+  coloured as on that one page (a pixel next to a lit one on another layer
+  is white), black too, the rest transparent; the group with layer 0 is the
+  whole page, opaque. So the images over each other are that page. A
+  hidden dot is black in it and transparent in the groups' images: the
+  host's drawing in between shows there (a text in its own font under a
+  sprite drawn over the text's pixels), and so is a dot its layer passed
+  through (`HiresScreen.passed`): only the dots a sprite's code cleared or
+  set cover the host's drawing.
+* **Page writes** (`onPageWrite`): the address of every write to main
+  memory's $2000‑$5FFF while set, whatever layer it is (not
+  `.discard`'s): a host following what the code draws on the pages. The
+  kit owns `cpu.onWrite` for it (watching $20‑$5F). Double hi‑res (aux
+  memory) isn't followed and has no layers.
+
+```swift
+machine.addNative(at: drawShip.entry, name: "DRAW_SHIP") { call in
+    call.run(into: 1) ?? 0                  // the ship on layer 1, over the page
+}
+machine.addNative(at: drawScore.entry, name: "DRAW_SCORE") { call in
+    scoreText = readScore(call.cpu.mem)     // the host draws it
+    return call.run(into: .discard) ?? 0    // the code runs, its pixels dropped
+}
+```
 
 ## Symbol files
 
@@ -258,7 +333,13 @@ its parent's), fingerprints (a variable between the instructions changed,
 an instruction changed, a build's own code), memory by name (wrapping at
 64K, two builds' maps, code for their parent on both, a program's own
 kind, an image), watched pages, the symbol file's text. `swift test
---filter ShadowTests`: the shadow following writes, a traced native (the
-code's memory, registers and cycles, its writes kept out of the shadow),
-ignored cycles, a native declining, natives inside natives, switched off,
-code going astray.
+--filter PageWriteTests`: the writes to the pages told. `swift test --filter
+NativeTests`: a native only where a JSR calls (not a branch back to the
+routine's start), the code's memory, registers and cycles, drawing on a
+layer (memory written, its bytes the layer's, the code's next write layer
+0's; page writes told, a page's layers cleared), discarded (nothing
+written, read back), the code left out, fewer cycles, natives inside
+natives (on the outer's layer or their own, inside `.discard`), a copy
+inside a drawing, switched off, taken out, code going astray; the pages'
+layers (a copy's, cleared), `showing`, and `Screen.images`' groups as one
+page.

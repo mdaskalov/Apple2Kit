@@ -87,7 +87,9 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   `ROMs.machine(model, roms:)`; `run(cycles:)`, `print`/`cls`, `clicks` /
   `takeClicks()` for the speaker, `hiresScreen()`), `HiresScreen` (a page's
   8K as lines, `dots(of:into:)`), `Screen.image` / `Screen.thumbnail` (a
-  `HiresScreen` in a `Screen.Style`; the colours as `Screen.RGB`),
+  `HiresScreen` in a `Screen.Style`; the colours as `Screen.RGB`, sRGB,
+  converted once into `Screen.colorSpace`, which a host sets to its
+  display's so images show without a conversion each frame),
   `SpeakerRenderer` / `SpeakerStream` (clicks → samples) and `SoundPlayer`
   (streamed clicks, or a whole sound's samples).
 * A host's machine: `Apple2Machine(model:, rom: nil, diskROM: nil)` (or
@@ -111,11 +113,14 @@ switches, drives, cards – with no clock, sound or UI, also used headless.
   before it, `addObserver` looks there; `switchedOff` turns hooks off by
   name (the CPU then doesn't stop there); `host` lets them find the app's
   own object.
-* The shadow of the hi‑res pages and traced natives (Docs/Natives.md):
-  `keepsShadow` keeps a second copy of $2000‑$5FFF that the code's writes
-  reach too; `addNative(at:name:flags:)` runs a routine's own code, then
-  Swift that may draw in its own way (`.ignoresGraphics`: the code's
-  writes kept out of the shadow) or give back the cycles (`.ignoresCycles`).
+* Natives and layers (Docs/Natives.md): `addNative(at:name:)` decides what
+  a JSR to a routine does: run its code (`call.run()`), drawing on a layer
+  (`run(into: 2)`, `.main` layer 0) or nowhere (`.discard`), something
+  before or after, or nothing; and the cycles it takes. One byte at an
+  address, main memory's: each hi‑res byte has the layer that wrote it
+  (`layer(at:)`, `HiresScreen.layers`); `Screen.images` shows the layers
+  in groups, together the page they make; `onPageWrite` tells the writes
+  to main memory's pages.
 * A binary is the file's bytes alone, as `Data/dsk.py extract` writes it;
   `load` jumps to it as `BRUN` does (RTS: the monitor's `*`).
   Without an address, `load` takes it from the name (`NAME#06XXXX.bin`, which
