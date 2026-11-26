@@ -10,7 +10,8 @@ public nonisolated final class NativeCall {
     /// The registers and stack pointer at the entry.
     public let entry: CPU6502.Registers
     public let entrySP: UInt8
-    /// Where the routine returns to: its caller's next instruction.
+    /// Where the routine returns to: its caller's next instruction (called by
+    /// a JMP, `addNative(onJump:)`: the caller's caller's).
     public let returnAddress: UInt16
     /// The natives this call runs inside (0: called by the code itself).
     public let depth: Int
@@ -74,16 +75,19 @@ public nonisolated final class NativeCall {
 public nonisolated extension Apple2Machine {
     /// Puts in a native for the routine at `address`: where the code calls it
     /// with JSR (not where a branch or a JMP gets there), `native` runs with
-    /// the call, the JSR done.  It returns the cycles the call takes after
+    /// the call, the JSR done.  With `onJump` also where a JMP gets there (a
+    /// tail call: `returnAddress` is then the caller's caller's, where the
+    /// routine's RTS goes; the routine's own JMPs to its start too, a call
+    /// inside it), the JMP done.  It returns the cycles the call takes after
     /// the JSR (`run`'s: the original's; 0: none).  Without `run`, the code
     /// is left out: the call returns (RTS) with the registers as the native
     /// leaves them.  Code that goes astray in `run` leaves it where it is.
     /// One with a `name` can be switched off (`switchedOff`): the routine
     /// runs as ever.  At an address the first switched on runs.
     @discardableResult
-    func addNative(at address: UInt16, name: String? = nil, maxSteps: Int = 5_000_000,
+    func addNative(at address: UInt16, name: String? = nil, maxSteps: Int = 5_000_000, onJump: Bool = false,
                    _ native: @escaping (NativeCall) -> UInt64) -> HookID {
-        let id = hooks.add(address, name: name, kind: .native(maxSteps: maxSteps, native))
+        let id = hooks.add(address, name: name, kind: .native(maxSteps: maxSteps, onJump: onJump, native))
         refreshTrap(address)
         return id
     }
@@ -93,7 +97,7 @@ public nonisolated extension Apple2Machine {
 
     /// The CPU's `onCall`: the native at `address`.
     internal func runNative(at address: UInt16) {
-        guard let hook = hooks.natives[address], case .native(let maxSteps, let native) = hook.kind else { return }
+        guard let hook = hooks.natives[address], case .native(let maxSteps, _, let native) = hook.kind else { return }
         let start = cpu.cycles
         let call = NativeCall(self, depth: nativeCalls, maxSteps: maxSteps)
         nativeCalls += 1

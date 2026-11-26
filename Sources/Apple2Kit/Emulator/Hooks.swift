@@ -8,17 +8,19 @@ public nonisolated struct HookID: Hashable, Sendable {
 
 /// The machine's hooks (`Apple2Machine.addHook`): Swift run where the CPU
 /// reaches an address, before the instruction there; and its natives
-/// (`addNative`), run where a JSR calls a routine.  They own the CPU's trap
-/// bits (`CPU6502.traps`, `callTraps`): a bit is set while a hook (a native)
-/// switched on is at its address, or the mouse card's firmware.
+/// (`addNative`), run where a JSR calls a routine (and a JMP, if it asks).
+/// They own the CPU's trap bits (`CPU6502.traps`, `callTraps`,
+/// `jumpTraps`): a bit is set while a hook (a native) switched on is at its
+/// address, or the mouse card's firmware.
 nonisolated struct Hooks {
     enum Kind {
         /// True: it handled the instruction.
         case hook((Apple2Machine) -> Bool)
         /// It only looks: the next hook, and the instruction, run after it.
         case observer((Apple2Machine) -> Void)
-        /// Run where a JSR calls the address (`Apple2Machine.addNative`).
-        case native(maxSteps: Int, (NativeCall) -> UInt64)
+        /// Run where a JSR calls the address, and with `onJump` where a JMP
+        /// gets there (`Apple2Machine.addNative`).
+        case native(maxSteps: Int, onJump: Bool, (NativeCall) -> UInt64)
     }
 
     struct Hook {
@@ -30,6 +32,7 @@ nonisolated struct Hooks {
 
         var observes: Bool { if case .observer = kind { true } else { false } }
         var isNative: Bool { if case .native = kind { true } else { false } }
+        var nativeOnJump: Bool { if case .native(_, let onJump, _) = kind { onJump } else { false } }
     }
 
     /// Every hook, and their order at each address.
@@ -133,6 +136,7 @@ public nonisolated extension Apple2Machine {
         cpu.traps[Int(address)] = hooks.active[address] != nil
             || mouseEnabled && MouseCard.Call.allCases.contains { $0.entry == address }
         cpu.callTraps[Int(address)] = hooks.natives[address] != nil
+        cpu.jumpTraps[Int(address)] = hooks.natives[address]?.nativeOnJump ?? false
     }
 
     /// The hooks at `pc`; true: one handled the instruction.

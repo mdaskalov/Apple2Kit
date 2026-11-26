@@ -206,10 +206,17 @@ the original's – while its drawing goes where the host wants it. Three
 things in Emulator/Natives.swift, Emulator/Layers.swift and
 Emulator/PageWrites.swift:
 
-* **Natives** (`addNative(at:name:maxSteps:_:)`): a named native for the
+* **Natives** (`addNative(at:name:maxSteps:onJump:_:)`): a named native for the
   routine at an address, run where a JSR calls it – not where a branch, a
   JMP or an RTS gets there (the CPU's `callTraps` and `onCall`, after the
-  JSR's pushes and 6 cycles). It gets a `NativeCall` (the machine, the
+  JSR's pushes and 6 cycles). With `onJump: true` also where a JMP gets
+  there (the CPU's `jumpTraps`, after the JMP's cycles): a tail call, a
+  caller's last `JMP routine` in place of `JSR routine / RTS`. The stack
+  then holds the caller's caller's return address, where the routine's
+  RTS goes: `returnAddress` is that one, and `run` works as after a JSR.
+  The routine's own JMPs back to its start fire it too, as a call inside
+  it (it then draws where it draws). Off by default: a JMP to a routine's
+  start isn't always a call. It gets a `NativeCall` (the machine, the
   registers and stack pointer at the entry, the return address, `depth`:
   the natives it runs inside) and decides what the call does:
   * `call.run()` runs the routine's own code as the CPU runs it, up to its

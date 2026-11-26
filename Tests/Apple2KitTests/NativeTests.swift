@@ -49,6 +49,62 @@ import Testing
         #expect(calls == 1 && m.cpu.x == 0)
     }
 
+    /// $0350: `LDX #$03 / JMP $0320`, a tail call; $0358: `JSR $0350 / RTS`.
+    /// $0360: `JMP $0310`; $0368: `JSR $0360 / RTS`.
+    private func tailCalls(_ m: Apple2Machine) {
+        m.cpu.mem.replaceSubrange(0x0350 ..< 0x0355, with: [0xA2, 0x03, 0x4C, 0x20, 0x03])
+        m.cpu.mem.replaceSubrange(0x0358 ..< 0x035C, with: [0x20, 0x50, 0x03, 0x60])
+        m.cpu.mem.replaceSubrange(0x0360 ..< 0x0363, with: [0x4C, 0x10, 0x03])
+        m.cpu.mem.replaceSubrange(0x0368 ..< 0x036C, with: [0x20, 0x60, 0x03, 0x60])
+    }
+
+    @Test func notWhereAJMPGetsThereByDefault() throws {
+        let m = machine()
+        tailCalls(m)
+        var calls = 0
+        m.addNative(at: 0x0320) { call in
+            calls += 1
+            return call.run() ?? 0
+        }
+        #expect(!m.cpu.jumpTraps[0x0320])
+        try run(m, 0x0358)
+        #expect(calls == 0 && m.cpu.x == 0)
+    }
+
+    @Test func whereAJMPGetsThereWithOnJump() throws {
+        let plain = machine()
+        tailCalls(plain)
+        try run(plain, 0x0358)
+        let m = machine()
+        tailCalls(m)
+        var calls = 0
+        m.addNative(at: 0x0320, onJump: true) { call in
+            calls += 1
+            // The tail call returns to the caller's caller: after $0358's JSR.
+            #expect(call.returnAddress == 0x035B && call.entry.x == 3)
+            return call.run() ?? 0
+        }
+        #expect(m.cpu.jumpTraps[0x0320] && m.cpu.callTraps[0x0320])
+        try run(m, 0x0358)
+        // Once: not at the BNE back to its start; cycles the code's.
+        #expect(calls == 1 && m.cpu.x == 0 && m.cpu.cycles == plain.cpu.cycles)
+        // Switched off, the JMP trap goes with the call trap.
+        let named = machine()
+        named.addNative(at: 0x0320, name: "loop", onJump: true) { $0.run() ?? 0 }
+        named.switchedOff = ["loop"]
+        #expect(!named.cpu.jumpTraps[0x0320] && !named.cpu.callTraps[0x0320])
+    }
+
+    @Test func aTailCallDrawsOnTheNativesLayer() throws {
+        for onJump in [false, true] {
+            let m = machine()
+            tailCalls(m)
+            m.addNative(at: 0x0310, onJump: onJump) { $0.run(into: 2) ?? 0 }
+            try run(m, 0x0368)
+            #expect(m.cpu.mem[0x2001] == 0x5F && m.layer(at: 0x2001) == (onJump ? 2 : 0))
+        }
+    }
+
     @Test func runsTheCode() throws {
         let m = machine()
         var entryA: UInt8 = 0
